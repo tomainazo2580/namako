@@ -1,7 +1,7 @@
 // Service worker : l'app fonctionne hors ligne après la première visite.
 // À CHAQUE nouvelle version de l'app, changez le numéro de CACHE ci-dessous.
 // Les données des étudiants (IndexedDB) ne sont jamais touchées ici.
-const CACHE = 'namako-v1';
+const CACHE = 'namako-v2';
 const FILES = ['./', 'index.html', 'style.css', 'app.js', 'db.js', 'backup.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', (e) => {

@@ -75,7 +75,7 @@ function renderSubject(id) {
   if (!s || s.deletedAt) return go({ name: 'home' });
   const ls = DB.activeLessons(id).sort((a, b) => b.updatedAt - a.updatedAt);
   app.innerHTML = `
-    <header class="top"><button class="ghost" data-act="back">Retour</button><button class="ghost" data-act="edit-subject" data-id="${id}">Modifier</button></header>
+    <header class="top"><button class="ghost" data-act="back">Retour</button><button class="ghost" data-act="import-txt">Importer un texte</button><button class="ghost" data-act="edit-subject" data-id="${id}">Modifier</button></header>
     <h1 class="sh" style="--c:${s.color}">${esc(s.name)}</h1><p class="sub">${plural(ls.length, 'leçon', 'leçons')}</p>
     <section style="margin-top:16px">${ls.length ? ls.map((l) => lessonHtml(l, s, false)).join('') : '<p class="empty">Aucune leçon ici. Ajoutez la première.</p>'}</section>
     <button class="fab" data-act="new-lesson" data-id="${id}">Nouvelle leçon</button>`;
@@ -83,9 +83,10 @@ function renderSubject(id) {
 
 function render() {
   if (view.name === 'subject') renderSubject(view.id);
+  else if (view.name === 'lesson') renderLesson(view.id);
   else { renderHome(); refreshList(); }
 }
-function go(v) { view = v; render(); scrollTo(0, 0); }
+function go(v) { stopSpeak(); view = v; render(); scrollTo(0, 0); }
 
 /* ---------- Fenêtres ---------- */
 
@@ -105,7 +106,7 @@ function subjectDialog(s) {
 function lessonDialog(l, subjectId) {
   openDlg(`<form data-form="lesson" data-id="${l?.id || ''}" data-subject="${l?.subjectId || subjectId}"><h2>${l ? 'Modifier la leçon' : 'Nouvelle leçon'}</h2>
     <label>Titre<input name="title" required maxlength="120" value="${esc(l?.title || '')}" autofocus></label>
-    <label>Contenu<textarea name="content" rows="10">${esc(l?.content || '')}</textarea></label>
+    ${toolbar()}<label>Contenu<textarea name="content" rows="12">${esc(l?.content || '')}</textarea></label>
     <label>Tags, séparés par des virgules<input name="tags" value="${esc((l?.tags || []).join(', '))}"></label>
     <div class="actions">${l ? `<button type="button" class="danger" data-act="trash-lesson" data-id="${l.id}">Mettre à la corbeille</button>` : ''}
     <button type="button" class="ghost" data-act="close">Annuler</button><button class="primary">Enregistrer</button></div></form>`);
@@ -147,6 +148,90 @@ function importDialog(b) {
     <button class="ghost" data-act="close">Annuler</button></div>`);
 }
 
+/* ---------- Lecture, éditeur, voix ---------- */
+
+// Mise en forme simple : # titres, **gras**, listes "- "
+function md(text) {
+  const inline = (s) => esc(s).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+  const out = [];
+  let list = false;
+  for (const line of text.split('\n')) {
+    const li = line.match(/^\s*[-•]\s+(.*)/);
+    if (li) { if (!list) { out.push('<ul>'); list = true; } out.push(`<li>${inline(li[1])}</li>`); continue; }
+    if (list) { out.push('</ul>'); list = false; }
+    const h = line.match(/^(#{1,3})\s+(.*)/);
+    if (h) out.push(`<h${h[1].length + 1}>${inline(h[2])}</h${h[1].length + 1}>`);
+    else if (line.trim()) out.push(`<p>${inline(line)}</p>`);
+  }
+  if (list) out.push('</ul>');
+  return out.join('');
+}
+
+function renderLesson(id) {
+  const l = find('lessons', id);
+  const s = l && find('subjects', l.subjectId);
+  if (!l || l.deletedAt || !s || s.deletedAt) return go({ name: 'home' });
+  const fs = DB.state.meta.fontSize || 18;
+  app.innerHTML = `
+    <header class="top"><button class="ghost" data-act="back">Retour</button><button class="ghost" data-act="edit-lesson" data-id="${id}">Modifier</button></header>
+    <h1 class="sh" style="--c:${s.color}">${esc(l.title)}</h1>
+    <p class="sub">${esc(s.name)}${(l.tags || []).length ? ' – ' + esc(l.tags.join(', ')) : ''}</p>
+    <article class="read" style="font-size:${fs}px">${md(l.content) || '<p class="empty">Cette leçon est vide. Touchez Modifier pour écrire.</p>'}</article>
+    <div class="readbar"><button data-act="font-" aria-label="Réduire le texte">A−</button><button data-act="font+" aria-label="Agrandir le texte">A+</button>
+    ${'speechSynthesis' in window ? `<button class="primary" id="listen" data-act="listen">${speakingNow ? 'Arrêter' : 'Écouter'}</button>` : ''}</div>`;
+}
+
+// Barre d'outils de l'éditeur : mise en forme et symboles scientifiques
+const SYMS = ['²', '³', '√', 'π', '∑', '∫', '≤', '≥', '≠', '±', '×', '÷', '∞', 'α', 'β', 'θ', 'Δ', '→', '°', '½'];
+const toolbar = () => `<div class="tb" aria-label="Mise en forme et symboles">
+  <button type="button" data-ins="**" data-wrap="1" aria-label="Gras"><b>G</b></button>
+  <button type="button" data-ins="# " data-line="1">Titre</button>
+  <button type="button" data-ins="- " data-line="1">Liste</button>
+  ${SYMS.map((s) => `<button type="button" data-ins="${s}">${s}</button>`).join('')}</div>`;
+
+function insertAt(btn) {
+  const ta = dlg.querySelector('textarea');
+  if (!ta) return;
+  const { ins, wrap, line } = btn.dataset;
+  const a = ta.selectionStart, b = ta.selectionEnd, v = ta.value;
+  let text, pos;
+  if (wrap) { text = v.slice(0, a) + ins + v.slice(a, b) + ins + v.slice(b); pos = b + ins.length; }
+  else if (line) { const ls = a ? v.lastIndexOf('\n', a - 1) + 1 : 0; text = v.slice(0, ls) + ins + v.slice(ls); pos = a + ins.length; }
+  else { text = v.slice(0, a) + ins + v.slice(b); pos = a + ins.length; }
+  ta.value = text;
+  ta.setSelectionRange(pos, pos);
+  ta.focus();
+}
+
+let speakingNow = false;
+function setListen(on) {
+  speakingNow = on;
+  const b = document.querySelector('#listen');
+  if (b) b.textContent = on ? 'Arrêter' : 'Écouter';
+}
+function stopSpeak() {
+  if ('speechSynthesis' in window) speechSynthesis.cancel();
+  setListen(false);
+}
+function toggleSpeak(l) {
+  if (!('speechSynthesis' in window)) return message('Lecture vocale indisponible', 'Ce navigateur ne sait pas lire le texte à voix haute.');
+  if (speakingNow) return stopSpeak();
+  const text = (l.title + '. ' + l.content).replace(/[#*_]/g, '');
+  const chunks = text.split(/(?<=[.!?\n])\s*/).flatMap((c) => c.match(/.{1,200}(\s|$)/gs) || []).map((c) => c.trim()).filter(Boolean);
+  const voices = speechSynthesis.getVoices();
+  const voice = voices.find((v) => v.lang.toLowerCase().startsWith('fr'));
+  if (voices.length && !voice) return message('Voix française absente', 'Installez une voix française dans les réglages du téléphone (Langue, puis Synthèse vocale) pour écouter vos leçons.');
+  speechSynthesis.cancel();
+  chunks.forEach((c, i) => {
+    const u = new SpeechSynthesisUtterance(c);
+    u.lang = 'fr-FR';
+    if (voice) u.voice = voice;
+    if (i === chunks.length - 1) u.onend = () => setListen(false);
+    speechSynthesis.speak(u);
+  });
+  setListen(true);
+}
+
 /* ---------- Actions ---------- */
 
 async function onClick(e) {
@@ -155,17 +240,34 @@ async function onClick(e) {
   const { act, id, label, store, mode } = el.dataset;
   switch (act) {
     case 'open-subject': return go({ name: 'subject', id });
-    case 'back': query = ''; picked = ''; return go({ name: 'home' });
+    case 'back':
+      if (view.name === 'lesson') return go(view.from || { name: 'home' });
+      query = ''; picked = ''; return go({ name: 'home' });
     case 'new-subject': return subjectDialog();
     case 'edit-subject': return subjectDialog(find('subjects', id));
     case 'trash-subject': await DB.put('subjects', { ...find('subjects', id), deletedAt: Date.now() }); closeDlg(); return go({ name: 'home' });
     case 'new-lesson': return lessonDialog(null, id);
-    case 'open-lesson': return lessonDialog(find('lessons', id));
-    case 'trash-lesson': await DB.put('lessons', { ...find('lessons', id), deletedAt: Date.now() }); closeDlg(); return render();
+    case 'open-lesson': return go({ name: 'lesson', id, from: view });
+    case 'trash-lesson': await DB.put('lessons', { ...find('lessons', id), deletedAt: Date.now() }); closeDlg(); return view.name === 'lesson' ? go(view.from || { name: 'home' }) : render();
     case 'pick': picked = label; query = label; document.querySelector('#q').value = label; return refreshList();
     case 'menu': return backupDialog();
+    case 'edit-lesson': return lessonDialog(find('lessons', id));
+    case 'import-txt': return txtInput.click();
+    case 'font-': case 'font+': {
+      const fs = Math.min(30, Math.max(14, (DB.state.meta.fontSize || 18) + (act === 'font+' ? 2 : -2)));
+      await DB.setMeta('fontSize', fs);
+      return render();
+    }
+    case 'listen': return toggleSpeak(find('lessons', view.id));
     case 'close': return closeDlg();
-    case 'backup-now': if (await BK.exportBackup()) { closeDlg(); render(); } return;
+    case 'backup-now': {
+      const r = await BK.exportBackup();
+      if (!r) return;
+      render();
+      return message(r === 'shared' ? 'Sauvegarde terminée' : 'Fichier enregistré',
+        r === 'shared' ? 'Vérifiez que le fichier est bien arrivé à destination (par exemple dans la conversation WhatsApp choisie).'
+                       : 'Le partage n’est pas disponible ici. Le fichier est dans vos Téléchargements : joignez-le à un message WhatsApp ou copiez-le ailleurs.');
+    }
     case 'restore': return document.querySelector('#file').click();
     case 'persist': await navigator.storage.persist(); return backupDialog();
     case 'trash': return trashDialog();
@@ -205,7 +307,12 @@ dlg.addEventListener('submit', async (e) => {
 });
 
 app.addEventListener('click', onClick);
-dlg.addEventListener('click', (e) => { if (e.target === dlg) closeDlg(); else onClick(e); });
+dlg.addEventListener('pointerdown', (e) => { if (e.target.closest('[data-ins]')) e.preventDefault(); });
+dlg.addEventListener('click', (e) => {
+  const b = e.target.closest('[data-ins]');
+  if (b) return insertAt(b);
+  if (e.target === dlg) closeDlg(); else onClick(e);
+});
 app.addEventListener('input', (e) => {
   if (e.target.id !== 'q') return;
   query = e.target.value;
@@ -224,6 +331,20 @@ document.querySelector('#file').addEventListener('change', async (e) => {
 
 window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvt = e; if (view.name === 'home') { renderHome(); refreshList(); } });
 window.addEventListener('appinstalled', () => { installEvt = null; render(); });
+
+// Import d'un fichier texte (.txt, .md) comme nouvelle leçon de la matière ouverte
+const txtInput = Object.assign(document.createElement('input'), { type: 'file', accept: '.txt,.md,text/plain', hidden: true });
+document.body.append(txtInput);
+txtInput.addEventListener('change', async (e) => {
+  const f = e.target.files[0];
+  e.target.value = '';
+  if (!f || view.name !== 'subject') return;
+  const text = (await f.text()).replace(/\r\n/g, '\n').trim();
+  if (!text) return message('Fichier vide', 'Ce fichier ne contient aucun texte.');
+  if (text.length > 500000) return message('Fichier trop volumineux', 'Choisissez un fichier de moins de 500 000 caractères.');
+  const l = await DB.put('lessons', { id: DB.uid(), subjectId: view.id, title: f.name.replace(/\.[^.]+$/, '').slice(0, 120) || 'Leçon importée', content: text, tags: [], source: 'txt', createdAt: Date.now(), deletedAt: null, mastery: 0, nextReviewAt: null });
+  go({ name: 'lesson', id: l.id, from: view });
+});
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 

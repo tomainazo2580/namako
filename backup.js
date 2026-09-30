@@ -16,25 +16,26 @@ export async function buildBackup() {
   return { app: 'namako', formatVersion: FORMAT_VERSION, exportedAt: Date.now(), data, checksum: await sha256(JSON.stringify(data)) };
 }
 
-// Renvoie true si la sauvegarde a été faite, false si l'étudiant a annulé.
+// Renvoie null si l'étudiant annule, 'shared' si le partage a eu lieu, 'downloaded' si le fichier a été téléchargé.
 export async function exportBackup() {
   const json = JSON.stringify(await buildBackup());
-  const name = `namako-${new Date().toISOString().slice(0, 10)}.namako`;
-  const file = new File([json], name, { type: 'text/plain' });
+  const stamp = new Date().toISOString().slice(0, 10);
+  // Partage en .txt : les navigateurs acceptent ce type pour WhatsApp et les autres applications.
+  const shareFile = new File([json], `namako-${stamp}.txt`, { type: 'text/plain' });
   let shared = false;
-  if (navigator.canShare && navigator.canShare({ files: [file] })) {
-    try { await navigator.share({ files: [file], title: 'Sauvegarde Namako' }); shared = true; }
-    catch (e) { if (e.name === 'AbortError') return false; }
+  if (navigator.canShare && navigator.canShare({ files: [shareFile] })) {
+    try { await navigator.share({ files: [shareFile], title: 'Sauvegarde Namako', text: 'Sauvegarde de mes cours Namako' }); shared = true; }
+    catch (e) { if (e.name === 'AbortError') return null; }
   }
   if (!shared) {
     const url = URL.createObjectURL(new Blob([json], { type: 'application/octet-stream' }));
     const a = document.createElement('a');
-    a.href = url; a.download = name;
+    a.href = url; a.download = `namako-${stamp}.namako`;
     document.body.append(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 10000);
   }
   await setMeta('lastBackupAt', Date.now());
-  return true;
+  return shared ? 'shared' : 'downloaded';
 }
 
 export async function readBackup(file) {
