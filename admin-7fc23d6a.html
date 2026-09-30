@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<meta name="theme-color" content="#0E7C86">
+<title>Namako, administration</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main id="a"></main>
+<input type="file" id="keyfile" hidden>
+<script type="module">
+import { b64uEncode, b64uDecode, canonicalId, PREFIX } from './license.js';
+
+const $ = (s) => document.querySelector(s);
+const enc = new TextEncoder();
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const KEY = 'nkadmin_key', LOG = 'nkadmin_log', CFGK = 'nkadmin_cfg';
+const load = (k, d = null) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } };
+const save = (k, v) => localStorage.setItem(k, JSON.stringify(v));
+let signKey = null, msg = '', result = null;
+
+// <crypto>
+async function kdf(pw, salt) {
+  const base = await crypto.subtle.importKey('raw', enc.encode(pw), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: 310000, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+}
+async function createKeys(pw) {
+  const kp = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
+  const pkcs8 = await crypto.subtle.exportKey('pkcs8', kp.privateKey);
+  const pub = new Uint8Array(await crypto.subtle.exportKey('raw', kp.publicKey));
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const data = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await kdf(pw, salt), pkcs8));
+  save(KEY, { v: 1, salt: b64uEncode(salt), iv: b64uEncode(iv), data: b64uEncode(data), pub: b64uEncode(pub) });
+}
+async function unlock(pw) {
+  const k = load(KEY);
+  const pkcs8 = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64uDecode(k.iv) }, await kdf(pw, b64uDecode(k.salt)), b64uDecode(k.data));
+  signKey = await crypto.subtle.importKey('pkcs8', pkcs8, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']);
+}
+async function makeCode(id) {
+  const sig = new Uint8Array(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, signKey, enc.encode(PREFIX + id)));
+  return b64uEncode(sig);
+}
+// </crypto>
+
+const fmt = (ts) => new Date(ts).toLocaleString('fr-FR', { dateStyle: 'medium', timeStyle: 'short' });
+function download(name, text, type = 'text/plain') {
+  const url = URL.createObjectURL(new Blob([text], { type }));
+  const a = Object.assign(document.createElement('a'), { href: url, download: name });
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+async function copy(t) {
+  try { await navigator.clipboard.writeText(t); }
+  catch { const ta = document.createElement('textarea'); ta.value = t; document.body.append(ta); ta.select(); document.execCommand('copy'); ta.remove(); }
+}
+
+function draw() {
+  const k = load(KEY);
+  let h = `<h1>Administration</h1><p class="sub">Cette page ne contient aucun secret : votre clé privée reste chiffrée dans ce téléphone.</p>
+    ${msg ? `<div class="banner"><span>${esc(msg)}</span></div>` : ''}`;
+  if (!k) {
+    h += `<h2 style="margin-top:24px">Créer vos clés</h2>
+      <p class="note">Choisissez un mot de passe d’au moins 8 caractères. Sans lui, vous ne pourrez plus fabriquer de codes, et personne ne pourra le retrouver.</p>
+      <form data-form="setup"><label>Mot de passe<input type="password" name="pw" minlength="8" required autocomplete="new-password"></label>
+      <label>Confirmer le mot de passe<input type="password" name="pw2" minlength="8" required autocomplete="new-password"></label>
+      <button class="primary">Créer mes clés</button></form>
+      <h2 style="margin-top:24px">J’ai déjà une sauvegarde de clé</h2>
+      <button data-act="restore-key">Restaurer depuis un fichier</button>`;
+  } else if (!signKey) {
+    h += `<h2 style="margin-top:24px">Déverrouiller</h2>
+      <form data-form="unlock"><label>Mot de passe<input type="password" name="pw" required autocomplete="current-password"></label><button class="primary">Déverrouiller</button></form>`;
+  } else {
+    h += main(k);
+  }
+  $('#a').innerHTML = h;
+}
+
+function main(k) {
+  const log = load(LOG, []);
+  const cfg = load(CFGK, {});
+  const f = (n, label, ph = '') => `<label>${label}<input name="${n}" value="${esc(cfg[n] || '')}" placeholder="${ph}"></label>`;
+  return `
+    <h2 style="margin-top:24px">Générer un code</h2>
+    <form data-form="gen"><label>Identifiant du téléphone (NK-XXXX-XXXX-XXXX)<input name="id" required autocapitalize="characters" autocomplete="off"></label>
+    <label>Nom du client (facultatif)<input name="name"></label>
+    <label>WhatsApp du client, format international sans + (facultatif)<input name="phone" inputmode="numeric" placeholder="261340000000"></label>
+    <label>Référence du paiement (facultatif)<input name="ref"></label>
+    <button class="primary">Générer le code</button></form>
+    ${result ? `<div class="item" style="display:block;margin-top:16px"><p><b>Code pour ${esc(result.id)}</b></p>
+      ${result.warn ? `<p class="note" style="color:var(--danger)">${esc(result.warn)}</p>` : ''}
+      <textarea readonly rows="4" onclick="this.select()">${esc(result.code)}</textarea>
+      <div class="actions col"><button class="primary" data-act="copy" data-text="${esc(result.code)}">Copier le code</button>
+      <a class="btn" href="https://wa.me/${esc(result.phone)}?text=${encodeURIComponent('Voici votre code d’activation Namako. Copiez-le en entier dans l’application :\n\n' + result.code)}">Envoyer par WhatsApp</a></div></div>` : ''}
+
+    <h2 style="margin-top:24px">Registre (${log.length})</h2>
+    ${log.slice(-8).reverse().map((e) => `<div class="item"><span>${esc(e.id)}<br><small class="note">${esc(e.name || '—')} le ${fmt(e.at)}${e.ref ? ', réf. ' + esc(e.ref) : ''}</small></span></div>`).join('') || '<p class="note">Aucune activation pour l’instant.</p>'}
+    <div class="actions col"><button data-act="csv">Exporter le registre (CSV)</button><button data-act="backup-log">Sauvegarder le registre</button></div>
+
+    <h2 style="margin-top:24px">Réglages de l’application</h2>
+    <p class="note">Remplissez, téléchargez config.js, puis envoyez-le sur GitHub à la place de l’ancien.</p>
+    <form data-form="cfg">${f('price', 'Prix affiché', '10 000 Ar')}${f('phone', 'Votre numéro WhatsApp/SMS, format international sans +', '261340000000')}
+    ${f('mvola', 'Numéro Mvola')}${f('mvolaHolder', 'Nom du titulaire Mvola')}
+    ${f('orange', 'Numéro Orange Money')}${f('orangeHolder', 'Nom du titulaire Orange Money')}
+    ${f('airtel', 'Numéro Airtel Money')}${f('airtelHolder', 'Nom du titulaire Airtel Money')}
+    <button class="primary">Télécharger config.js</button></form>
+
+    <h2 style="margin-top:24px">Ma clé</h2>
+    <p class="note">Sauvegardez ce fichier et envoyez-le à vous-même (WhatsApp, e-mail). Il est chiffré par votre mot de passe. Si vous perdez la clé, plus aucun nouveau code ne sera possible.</p>
+    <div class="actions col"><button data-act="backup-key">Sauvegarder ma clé</button><button data-act="lock">Verrouiller</button></div>`;
+}
+
+document.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = e.target, d = Object.fromEntries(new FormData(f));
+  msg = '';
+  try {
+    if (f.dataset.form === 'setup') {
+      if (d.pw !== d.pw2) msg = 'Les deux mots de passe sont différents.';
+      else { await createKeys(d.pw); await unlock(d.pw); msg = 'Clés créées. Sauvegardez-les maintenant (bouton « Sauvegarder ma clé » en bas de page).'; }
+    } else if (f.dataset.form === 'unlock') {
+      try { await unlock(d.pw); } catch { msg = 'Mot de passe incorrect.'; }
+    } else if (f.dataset.form === 'gen') {
+      const id = canonicalId(d.id);
+      if (!id) msg = 'Identifiant invalide : il doit ressembler à NK-XXXX-XXXX-XXXX.';
+      else {
+        const log = load(LOG, []);
+        const same = log.filter((x) => x.id === id);
+        const client = log.filter((x) => x.id !== id && ((d.phone && x.phone === d.phone) || (d.name && x.name && x.name.toLowerCase() === d.name.toLowerCase())));
+        let warn = '';
+        if (same.length) warn = `Un code a déjà été délivré pour cet identifiant le ${fmt(same[same.length - 1].at)} (${same.length} fois).`;
+        else if (client.length) warn = `Ce client a déjà ${client.length} autre(s) téléphone(s) activé(s). Vérifiez qu’il s’agit bien d’un nouvel achat.`;
+        const code = await makeCode(id);
+        log.push({ at: Date.now(), id, name: d.name, phone: d.phone, ref: d.ref });
+        save(LOG, log);
+        result = { code, id, phone: d.phone || '', warn };
+      }
+    } else if (f.dataset.form === 'cfg') {
+      save(CFGK, d);
+      const cfg = {
+        PUBLIC_KEY: load(KEY).pub, TRIAL_DAYS: 7, PRICE_LABEL: d.price || '', ADMIN_PHONE: (d.phone || '').replace(/\D/g, ''),
+        PAYMENT: [
+          { name: 'Mvola', number: d.mvola || '', holder: d.mvolaHolder || '' },
+          { name: 'Orange Money', number: d.orange || '', holder: d.orangeHolder || '' },
+          { name: 'Airtel Money', number: d.airtel || '', holder: d.airtelHolder || '' },
+        ],
+      };
+      download('config.js', `// Fichier généré par la page d'administration.\nexport const CFG = ${JSON.stringify(cfg, null, 2)};\n`, 'text/javascript');
+      msg = 'config.js téléchargé. Envoyez-le sur GitHub à la place de l’ancien.';
+    }
+  } catch (err) { msg = 'Erreur : ' + err.message; }
+  draw();
+});
+
+document.addEventListener('click', async (e) => {
+  const el = e.target.closest('[data-act]');
+  if (!el) return;
+  const act = el.dataset.act;
+  if (act === 'copy') { await copy(el.dataset.text); const o = el.textContent; el.textContent = 'Copié'; setTimeout(() => { el.textContent = o; }, 1500); return; }
+  if (act === 'restore-key') return $('#keyfile').click();
+  if (act === 'backup-key') download('namako-cle-admin.json', JSON.stringify(load(KEY)), 'application/json');
+  if (act === 'backup-log') download('namako-registre.json', JSON.stringify(load(LOG, [])), 'application/json');
+  if (act === 'csv') {
+    const q = (s) => `"${String(s ?? '').replace(/"/g, '""')}"`;
+    download('namako-registre.csv', 'date;identifiant;nom;telephone;reference\n' + load(LOG, []).map((x) => [new Date(x.at).toISOString(), x.id, x.name, x.phone, x.ref].map(q).join(';')).join('\n'), 'text/csv');
+  }
+  if (act === 'lock') { signKey = null; result = null; msg = ''; draw(); }
+});
+
+$('#keyfile').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  try {
+    const k = JSON.parse(await file.text());
+    if (!k.salt || !k.iv || !k.data || !k.pub) throw new Error('fichier invalide');
+    save(KEY, k); msg = 'Clé restaurée. Entrez votre mot de passe pour la déverrouiller.';
+  } catch { msg = 'Ce fichier n’est pas une sauvegarde de clé Namako.'; }
+  draw();
+});
+
+draw();
+</script>
+</body>
+</html>
