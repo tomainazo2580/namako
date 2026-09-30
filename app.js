@@ -1,5 +1,6 @@
 import * as DB from './db.js';
 import * as BK from './backup.js';
+import * as RV from './review.js';
 
 const app = document.querySelector('#app');
 const dlg = document.querySelector('#dlg');
@@ -11,6 +12,7 @@ let picked = '';
 let installEvt = null;
 let pending = null;
 let timer;
+let session = null;
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const days = (ts) => Math.floor((Date.now() - ts) / 864e5);
@@ -35,8 +37,8 @@ function renderHome() {
   const n = DB.activeSubjects().length;
   app.innerHTML = `
     <header class="top"><div><h1>Namako</h1><p class="sub">${n ? plural(n, 'matière', 'matières') : 'Vos cours, toujours avec vous'}</p></div>
-    <button class="ghost" data-act="menu">Sauvegarde</button></header>
-    ${banners()}
+    <span><button class="ghost" data-act="stats">Progression</button><button class="ghost" data-act="menu">Sauvegarde</button></span></header>
+    ${banners()}${reviewCard()}
     <div class="search"><input id="q" type="search" autocomplete="off" placeholder="Chercher un titre, un tag, une matière" aria-label="Rechercher dans vos leçons" value="${esc(query)}"><div id="sugg" class="sugg"></div></div>
     <div id="list"></div>
     <button class="fab" data-act="new-subject">Nouvelle matière</button>`;
@@ -44,7 +46,7 @@ function renderHome() {
 
 const cardHtml = (s) => {
   const ls = DB.activeLessons(s.id);
-  const due = ls.filter((l) => l.nextReviewAt && l.nextReviewAt <= Date.now()).length;
+  const due = ls.filter((l) => RV.isDue(l)).length;
   return `<button class="card" data-act="open-subject" data-id="${s.id}"><i style="background:${s.color}"></i>
     <span class="cb"><b>${esc(s.name)}</b><small>${plural(ls.length, 'leçon', 'leçons')}</small></span>
     ${due ? `<em style="box-shadow:inset 0 0 0 2px ${s.color}">${due} à revoir</em>` : ''}</button>`;
@@ -77,6 +79,7 @@ function renderSubject(id) {
   app.innerHTML = `
     <header class="top"><button class="ghost" data-act="back">Retour</button><button class="ghost" data-act="import-txt">Importer un texte</button><button class="ghost" data-act="edit-subject" data-id="${id}">Modifier</button></header>
     <h1 class="sh" style="--c:${s.color}">${esc(s.name)}</h1><p class="sub">${plural(ls.length, 'leçon', 'leçons')}</p>
+    ${RV.dueLessons(id).length ? `<button class="primary" style="margin-top:12px" data-act="review" data-id="${id}">Réviser cette matière (${RV.dueLessons(id).length})</button>` : ''}
     <section style="margin-top:16px">${ls.length ? ls.map((l) => lessonHtml(l, s, false)).join('') : '<p class="empty">Aucune leçon ici. Ajoutez la première.</p>'}</section>
     <button class="fab" data-act="new-lesson" data-id="${id}">Nouvelle leçon</button>`;
 }
@@ -84,6 +87,8 @@ function renderSubject(id) {
 function render() {
   if (view.name === 'subject') renderSubject(view.id);
   else if (view.name === 'lesson') renderLesson(view.id);
+  else if (view.name === 'review') renderReview();
+  else if (view.name === 'stats') renderStats();
   else { renderHome(); refreshList(); }
 }
 function go(v) { stopSpeak(); view = v; render(); scrollTo(0, 0); }
@@ -146,6 +151,69 @@ function importDialog(b) {
     <div class="actions col"><button class="primary" data-act="apply" data-mode="merge">Fusionner avec mes cours</button>
     <button class="danger" data-act="apply" data-mode="replace">Remplacer mes cours</button>
     <button class="ghost" data-act="close">Annuler</button></div>`);
+}
+
+/* ---------- Révision et progression ---------- */
+
+function reviewCard() {
+  if (!DB.activeLessons().length) return '';
+  const due = RV.dueLessons(null, Date.now(), 9999).length;
+  const st = RV.streaks();
+  return `<div class="today"><div><b>${due ? plural(due, 'leçon à revoir', 'leçons à revoir') : 'Rien à revoir aujourd’hui'}</b>
+    <small>${st.cur ? `Série : ${plural(st.cur, 'jour', 'jours')}` : 'Révisez aujourd’hui pour lancer votre série'}</small></div>
+    ${due ? '<button class="primary" data-act="review">Réviser</button>' : ''}</div>`;
+}
+
+function renderReview() {
+  if (!session) return go({ name: 'home' });
+  if (session.i >= session.ids.length) return renderSummary();
+  const l = find('lessons', session.ids[session.i]);
+  const sub = l && find('subjects', l.subjectId);
+  if (!l || l.deletedAt || !sub || sub.deletedAt) { session.i++; return renderReview(); }
+  const fs = DB.state.meta.fontSize || 18;
+  const lbl = (r) => RV.intervalLabel(RV.INTERVALS[RV.nextBox(l.box, r)]);
+  app.innerHTML = `
+    <header class="top"><button class="ghost" data-act="end-review">Terminer</button><span class="sub">${session.i + 1} sur ${session.ids.length}</span></header>
+    <div class="prog" role="progressbar" aria-valuemin="0" aria-valuemax="${session.ids.length}" aria-valuenow="${session.i}"><i style="width:${Math.round((session.i / session.ids.length) * 100)}%"></i></div>
+    <h1 class="sh" style="--c:${sub.color}">${esc(l.title)}</h1><p class="sub">${esc(sub.name)}</p>
+    ${session.revealed
+      ? `<article class="read" style="font-size:${fs}px">${md(l.content) || '<p class="empty">Cette leçon est vide.</p>'}</article>
+         <div class="readbar rate"><button class="danger" data-act="rate" data-r="0">À revoir<small>${lbl(0)}</small></button>
+         <button data-act="rate" data-r="1">Encore un effort<small>${lbl(1)}</small></button>
+         <button class="primary" data-act="rate" data-r="2">Je maîtrise<small>${lbl(2)}</small></button></div>`
+      : `<p class="empty">Rappelez-vous l’essentiel de cette leçon, puis affichez-la pour vérifier.</p>
+         <div class="readbar"><button class="primary" data-act="reveal">Afficher la leçon</button></div>`}`;
+  scrollTo(0, 0);
+}
+
+function renderSummary() {
+  const c = session.counts;
+  const n = c[0] + c[1] + c[2];
+  const st = RV.streaks();
+  app.innerHTML = `
+    <header class="top"><span></span></header>
+    <h1>Séance terminée</h1><p class="sub">${plural(n, 'leçon revue', 'leçons revues')}.${st.cur ? ` Série en cours : ${plural(st.cur, 'jour', 'jours')}.` : ''}</p>
+    <div class="tiles"><div><b>${c[2]}</b><small>maîtrisées</small></div><div><b>${c[1]}</b><small>encore un effort</small></div><div><b>${c[0]}</b><small>à revoir</small></div></div>
+    <div class="actions col"><button class="primary" data-act="end-review">Retour à l’accueil</button><button data-act="stats">Voir ma progression</button></div>`;
+}
+
+function renderStats() {
+  const st = RV.streaks();
+  const week = RV.lastDays(7);
+  const max = Math.max(1, ...week.map((d) => d.count));
+  const b = RV.breakdown();
+  app.innerHTML = `
+    <header class="top"><button class="ghost" data-act="back">Retour</button></header>
+    <h1>Progression</h1>
+    <div class="tiles"><div><b>${st.cur}</b><small>jours d’affilée</small></div><div><b>${st.best}</b><small>meilleure série</small></div><div><b>${DB.state.reviews.length}</b><small>révisions</small></div></div>
+    <h2>7 derniers jours</h2>
+    <div class="chart" role="img" aria-label="Révisions par jour : ${week.map((d) => d.label + ' ' + d.count).join(', ')}">
+      ${week.map((d) => `<div><span>${d.count}</span><i style="height:${Math.round((d.count / max) * 80) + 3}px"></i><small>${d.label}</small></div>`).join('')}</div>
+    <h2 style="margin-top:24px">Vos leçons</h2>
+    <div class="stack"><span style="flex:${b.mastered};background:var(--accent)"></span><span style="flex:${b.learning};background:#E9A23B"></span></div>
+    <p class="note">${plural(b.mastered, 'maîtrisée', 'maîtrisées')}, ${plural(b.learning, 'à consolider', 'à consolider')}, ${plural(b.fresh, 'nouvelle', 'nouvelles')}.</p>
+    <h2 style="margin-top:24px">Badges</h2>
+    <div class="badges">${RV.badges().map((x) => `<div class="badge ${x.ok ? 'on' : ''}"><b>${esc(x.name)}</b><small>${x.ok ? 'Obtenu' : esc(x.desc)}</small></div>`).join('')}</div>`;
 }
 
 /* ---------- Lecture, éditeur, voix ---------- */
@@ -251,6 +319,27 @@ async function onClick(e) {
     case 'trash-lesson': await DB.put('lessons', { ...find('lessons', id), deletedAt: Date.now() }); closeDlg(); return view.name === 'lesson' ? go(view.from || { name: 'home' }) : render();
     case 'pick': picked = label; query = label; document.querySelector('#q').value = label; return refreshList();
     case 'menu': return backupDialog();
+    case 'stats': return go({ name: 'stats' });
+    case 'review': {
+      const ids = RV.dueLessons(id || null, Date.now(), 20).map((l) => l.id);
+      if (!ids.length) return message('Rien à revoir', 'Toutes vos leçons sont à jour. Revenez demain !');
+      session = { ids, i: 0, revealed: false, counts: [0, 0, 0], requeued: new Set() };
+      return go({ name: 'review' });
+    }
+    case 'reveal': session.revealed = true; return render();
+    case 'rate': {
+      const r = Number(el.dataset.r);
+      const l = find('lessons', session.ids[session.i]);
+      const now = Date.now();
+      await DB.put('lessons', { ...l, ...RV.schedule(l, r, now) });
+      await DB.put('reviews', { id: DB.uid(), lessonId: l.id, rating: r, at: now, day: RV.dayKey(now) });
+      session.counts[r]++;
+      if (r === 0 && !session.requeued.has(l.id)) { session.requeued.add(l.id); session.ids.push(l.id); }
+      session.i++;
+      session.revealed = false;
+      return render();
+    }
+    case 'end-review': session = null; return go({ name: 'home' });
     case 'edit-lesson': return lessonDialog(find('lessons', id));
     case 'import-txt': return txtInput.click();
     case 'font-': case 'font+': {

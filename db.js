@@ -1,10 +1,10 @@
 // Base locale (IndexedDB) et recherche. Aucune donnée ne quitte le téléphone.
 const DB_NAME = 'namako';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const TRASH_DAYS = 30;
 let db;
 
-export const state = { subjects: [], lessons: [], meta: {} };
+export const state = { subjects: [], lessons: [], reviews: [], meta: {} };
 
 export const uid = () =>
   crypto.randomUUID ? crypto.randomUUID() : 'id-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
@@ -25,6 +25,7 @@ function open() {
       if (!d.objectStoreNames.contains('subjects')) d.createObjectStore('subjects', { keyPath: 'id' });
       if (!d.objectStoreNames.contains('lessons')) d.createObjectStore('lessons', { keyPath: 'id' }).createIndex('subjectId', 'subjectId');
       if (!d.objectStoreNames.contains('meta')) d.createObjectStore('meta', { keyPath: 'key' });
+      if (!d.objectStoreNames.contains('reviews')) d.createObjectStore('reviews', { keyPath: 'id' }).createIndex('day', 'day');
     };
     r.onsuccess = () => res(r.result);
     r.onerror = () => rej(r.error);
@@ -33,14 +34,16 @@ function open() {
 
 export async function init() {
   db = await open();
-  const t = db.transaction(['subjects', 'lessons', 'meta']);
-  const [s, l, m] = await Promise.all([
+  const t = db.transaction(['subjects', 'lessons', 'reviews', 'meta']);
+  const [s, l, r, m] = await Promise.all([
     wrap(t.objectStore('subjects').getAll()),
     wrap(t.objectStore('lessons').getAll()),
+    wrap(t.objectStore('reviews').getAll()),
     wrap(t.objectStore('meta').getAll()),
   ]);
   state.subjects = s;
   state.lessons = l;
+  state.reviews = r;
   state.meta = Object.fromEntries(m.map((x) => [x.key, x.value]));
   await purgeTrash();
 }
@@ -70,12 +73,14 @@ export async function removeForever(store, id) {
 }
 
 export async function clearAll() {
-  const t = db.transaction(['subjects', 'lessons'], 'readwrite');
+  const t = db.transaction(['subjects', 'lessons', 'reviews'], 'readwrite');
   t.objectStore('subjects').clear();
   t.objectStore('lessons').clear();
+  t.objectStore('reviews').clear();
   await done(t);
   state.subjects = [];
   state.lessons = [];
+  state.reviews = [];
 }
 
 export async function setMeta(key, value) {

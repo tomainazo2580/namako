@@ -12,7 +12,7 @@ export async function buildBackup() {
   const subjects = state.subjects.filter((s) => !s.deletedAt);
   const ok = new Set(subjects.map((s) => s.id));
   const lessons = state.lessons.filter((l) => !l.deletedAt && ok.has(l.subjectId));
-  const data = { subjects, lessons };
+  const data = { subjects, lessons, reviews: state.reviews };
   return { app: 'namako', formatVersion: FORMAT_VERSION, exportedAt: Date.now(), data, checksum: await sha256(JSON.stringify(data)) };
 }
 
@@ -52,8 +52,8 @@ export async function readBackup(file) {
 export async function applyBackup(b, mode) {
   if (mode === 'replace') await clearAll();
   let added = 0, updated = 0;
-  for (const store of ['subjects', 'lessons']) {
-    for (const item of b.data[store]) {
+  for (const store of ['subjects', 'lessons', 'reviews']) {
+    for (const item of b.data[store] || []) {
       const cur = state[store].find((x) => x.id === item.id);
       if (!cur) { await putRaw(store, item); added++; }
       else if (item.updatedAt > cur.updatedAt) { await putRaw(store, item); updated++; }
