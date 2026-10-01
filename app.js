@@ -1,6 +1,8 @@
 import * as DB from './db.js';
 import * as BK from './backup.js';
 import * as RV from './review.js';
+import * as LIC from './license.js';
+import * as CFG from './config.js';
 
 const app = document.querySelector('#app');
 const dlg = document.querySelector('#dlg');
@@ -13,6 +15,7 @@ let installEvt = null;
 let pending = null;
 let timer;
 let session = null;
+let blocked = false;
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const days = (ts) => Math.floor((Date.now() - ts) / 864e5);
@@ -24,6 +27,7 @@ const find = (store, id) => DB.state[store].find((x) => x.id === id);
 
 function banners() {
   const out = [];
+  if (LIC.lic.enforced && !LIC.lic.licensed) out.push(`<div class="banner"><span>Essai gratuit : ${plural(LIC.lic.daysLeft, 'jour restant', 'jours restants')}.</span><button data-act="activate">Activer</button></div>`);
   const last = DB.state.meta.lastBackupAt;
   if (DB.activeLessons().length > 0 && (!last || days(last) >= 7)) {
     const msg = last ? `Dernière sauvegarde il y a ${plural(days(last), 'jour', 'jours')}.` : 'Vos cours ne sont pas encore sauvegardés.';
@@ -85,7 +89,9 @@ function renderSubject(id) {
 }
 
 function render() {
-  if (view.name === 'subject') renderSubject(view.id);
+  if (blocked) renderUpdate();
+  else if (LIC.lic.locked || view.name === 'activate') renderActivate();
+  else if (view.name === 'subject') renderSubject(view.id);
   else if (view.name === 'lesson') renderLesson(view.id);
   else if (view.name === 'review') renderReview();
   else if (view.name === 'stats') renderStats();
@@ -126,6 +132,7 @@ async function backupDialog() {
     <p>${last ? `Dernière sauvegarde : ${fmtDate(last)}.` : 'Aucune sauvegarde pour l’instant.'}</p>
     <div class="actions col"><button class="primary" data-act="backup-now">Sauvegarder mes cours</button>
     <button data-act="restore">Restaurer depuis un fichier</button>
+    ${LIC.lic.enforced ? `<button data-act="activate">${LIC.lic.licensed ? 'Mon activation' : 'Activer Namako'}</button>` : ''}
     <button data-act="trash">Corbeille (${t.subjects.length + t.lessons.length})</button></div>
     <p class="note">Stockage protégé : <b>${persisted ? 'oui' : 'non'}</b>.${est?.usage != null ? ` Espace utilisé : ${(est.usage / 1048576).toFixed(1)} Mo.` : ''}</p>
     ${persisted ? '' : '<button class="ghost" data-act="persist">Protéger mes données</button>'}
@@ -151,6 +158,75 @@ function importDialog(b) {
     <div class="actions col"><button class="primary" data-act="apply" data-mode="merge">Fusionner avec mes cours</button>
     <button class="danger" data-act="apply" data-mode="replace">Remplacer mes cours</button>
     <button class="ghost" data-act="close">Annuler</button></div>`);
+}
+
+/* ---------- Activation et mise à jour forcée ---------- */
+
+function renderActivate() {
+  const L = LIC.lic;
+  const msg = `Bonjour, je souhaite activer Namako. Mon identifiant : ${L.installId}`;
+  const intro = L.locked
+    ? 'Vos cours sont toujours sur votre téléphone. Activez Namako pour y accéder de nouveau.'
+    : L.licensed ? 'Namako est activé à vie sur ce téléphone. Merci !' : `Il vous reste ${plural(L.daysLeft, 'jour', 'jours')} d’essai gratuit.`;
+  app.innerHTML = `
+    <header class="top">${L.locked ? '<span></span>' : '<button class="ghost" data-act="back">Retour</button>'}</header>
+    <h1>${L.locked ? 'Essai terminé' : L.licensed ? 'Activation' : 'Activer Namako'}</h1>
+    <p class="sub">${intro}</p>
+    ${L.clockSuspect ? '<p class="note">La date de votre téléphone semble incorrecte. Corrigez-la dans les réglages.</p>' : ''}
+    ${L.licensed ? '' : `
+    <h2 style="margin-top:24px">1. Payer</h2>
+    <p>${esc(CFG.PRICE_LABEL)}</p>
+    ${CFG.PAYMENTS.map((p) => `<div class="item"><span><b>${esc(p.name)}</b><br><small class="note">${esc(p.number)}${p.holder ? ', ' + esc(p.holder) : ''}</small></span>
+      <button data-act="copy" data-text="${esc(p.number)}">Copier</button></div>`).join('')}
+    <h2 style="margin-top:24px">2. Envoyer mon identifiant</h2>
+    <p class="idbox">${esc(L.installId)}</p>
+    <div class="actions col"><button data-act="copy" data-text="${esc(L.installId)}">Copier mon identifiant</button>
+    <a class="btn" href="https://wa.me/${esc(CFG.ADMIN_WHATSAPP)}?text=${encodeURIComponent(msg)}">Envoyer par WhatsApp</a>
+    <a class="btn" href="sms:${esc(CFG.ADMIN_PHONE)}?body=${encodeURIComponent(msg)}">Envoyer par SMS</a></div>
+    <h2 style="margin-top:24px">3. Entrer mon code</h2>
+    <form data-form="activate"><label>Code d’activation<textarea name="code" rows="4" required autocomplete="off" autocapitalize="characters" spellcheck="false"></textarea></label>
+    <p class="note" id="actmsg" role="status"></p><button class="primary">Activer</button></form>`}
+    ${L.locked ? '<h2 style="margin-top:24px">Mes cours</h2><div class="actions col"><button data-act="backup-now">Sauvegarder mes cours</button></div>' : ''}`;
+}
+
+function renderUpdate() {
+  app.innerHTML = `<h1>Mise à jour requise</h1>
+    <p class="sub">Une nouvelle version de Namako est nécessaire. Connectez-vous à Internet puis touchez le bouton. Vos cours ne seront pas effacés.</p>
+    <p class="note" id="upmsg" role="status"></p>
+    <div class="actions col"><button class="primary" data-act="do-update">Mettre à jour</button></div>`;
+}
+
+async function copyText(btn) {
+  const old = btn.textContent;
+  try { await navigator.clipboard.writeText(btn.dataset.text); }
+  catch { const ta = document.createElement('textarea'); ta.value = btn.dataset.text; document.body.append(ta); ta.select(); document.execCommand('copy'); ta.remove(); }
+  btn.textContent = 'Copié';
+  setTimeout(() => (btn.textContent = old), 1500);
+}
+
+async function doUpdate(btn) {
+  btn.disabled = true;
+  btn.textContent = 'Mise à jour…';
+  try {
+    await Promise.all(CFG.APP_FILES.map((f) => fetch(f, { cache: 'reload' }).then((r) => { if (!r.ok) throw new Error('échec'); })));
+    for (const r of await navigator.serviceWorker.getRegistrations()) await r.unregister();
+    for (const k of await caches.keys()) await caches.delete(k);
+    location.reload();
+  } catch {
+    btn.disabled = false;
+    btn.textContent = 'Mettre à jour';
+    document.querySelector('#upmsg').textContent = 'Impossible de télécharger la mise à jour. Vérifiez votre connexion Internet et réessayez.';
+  }
+}
+
+// Bloque l'app seulement si l'appareil est en ligne ET que la version est trop ancienne
+async function checkVersion() {
+  try {
+    const r = await fetch('version.json', { cache: 'no-store' });
+    if (!r.ok) return;
+    const { min } = await r.json();
+    if (min > CFG.APP_BUILD) { blocked = true; render(); }
+  } catch { /* hors ligne : on ne bloque pas */ }
 }
 
 /* ---------- Révision et progression ---------- */
@@ -320,6 +396,9 @@ async function onClick(e) {
     case 'pick': picked = label; query = label; document.querySelector('#q').value = label; return refreshList();
     case 'menu': return backupDialog();
     case 'stats': return go({ name: 'stats' });
+    case 'activate': closeDlg(); return go({ name: 'activate' });
+    case 'copy': return copyText(el);
+    case 'do-update': return doUpdate(el);
     case 'review': {
       const ids = RV.dueLessons(id || null, Date.now(), 20).map((l) => l.id);
       if (!ids.length) return message('Rien à revoir', 'Toutes vos leçons sont à jour. Revenez demain !');
@@ -395,6 +474,13 @@ dlg.addEventListener('submit', async (e) => {
   render();
 });
 
+app.addEventListener('submit', async (e) => {
+  if (e.target.dataset.form !== 'activate') return;
+  e.preventDefault();
+  const ok = await LIC.activate(new FormData(e.target).get('code'));
+  if (ok) { view = { name: 'home' }; render(); message('Namako est activé', 'Merci ! Votre activation est valable à vie sur ce téléphone.'); }
+  else document.querySelector('#actmsg').textContent = 'Ce code ne correspond pas à cet identifiant. Vérifiez qu’il est complet, sans lettre manquante.';
+});
 app.addEventListener('click', onClick);
 dlg.addEventListener('pointerdown', (e) => { if (e.target.closest('[data-ins]')) e.preventDefault(); });
 dlg.addEventListener('click', (e) => {
@@ -435,10 +521,19 @@ txtInput.addEventListener('change', async (e) => {
   go({ name: 'lesson', id: l.id, from: view });
 });
 
+document.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState !== 'visible' || !LIC.lic.installId) return;
+  const was = LIC.lic.locked;
+  await LIC.touch();
+  if (LIC.lic.locked !== was) render();
+});
+
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 
 (async () => {
   try { await DB.init(); }
   catch { app.innerHTML = '<p class="empty">Le stockage du navigateur est indisponible (navigation privée ?). Ouvrez Namako dans une fenêtre normale.</p>'; return; }
+  await LIC.init();
   render();
+  checkVersion();
 })();
