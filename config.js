@@ -2,7 +2,7 @@
 // changez les valeurs puis « Commit changes ». Ne changez que ce qui est entre guillemets ou chiffres.
 
 export const APP_BUILD = 4;     // numéro de cette version de l'app (voir version.json)
-export const TRIAL_DAYS = 0;    // durée de l'essai gratuit. Mettre 0 pour tester l'écran de verrouillage.
+export const TRIAL_DAYS = 7;    // durée de l'essai gratuit. Mettre 0 pour tester l'écran de verrouillage.
 
 // Clé publique de vérification des codes. Elle vient de la page admin.html (« Créer mes clés »).
 // Tant qu'elle vaut null, Namako reste ouvert à tous, sans essai ni verrouillage.
