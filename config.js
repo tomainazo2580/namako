@@ -9,7 +9,7 @@ export const TRIAL_DAYS = 7;    // durée de l'essai gratuit. Mettre 0 pour test
 export const PUBLIC_KEY = {"crv":"P-256","ext":true,"key_ops":["verify"],"kty":"EC","x":"wSGh2-TsAeNoVLFP236lgS4yE8y8i5LFFGsVyVeUlC0","y":"0R4b4FhmM1gdZwAY1X8QwpcLT02hvBRqGE9Tro40CcU"};;
 
 // À REMPLACER par vos vrais numéros avant de partager l'app :
-export const PRICE_LABEL = 'Prix : à définir (paiement unique, accès à vie)';
+export const PRICE_LABEL = 'Prix : 5000ar (paiement unique, accès à vie)';
 export const ADMIN_WHATSAPP = '261343994907';   // votre numéro WhatsApp, format international, sans + ni espaces
 export const ADMIN_PHONE = '+261343994907';     // votre numéro pour les SMS
 export const PAYMENTS = [
