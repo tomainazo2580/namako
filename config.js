@@ -6,7 +6,7 @@ export const TRIAL_DAYS = 7;    // durée de l'essai gratuit. Mettre 0 pour test
 
 // Clé publique de vérification des codes. Elle vient de la page admin.html (« Créer mes clés »).
 // Tant qu'elle vaut null, Namako reste ouvert à tous, sans essai ni verrouillage.
-export const PUBLIC_KEY = null;
+export const PUBLIC_KEY = {"crv":"P-256","ext":true,"key_ops":["verify"],"kty":"EC","x":"wSGh2-TsAeNoVLFP236lgS4yE8y8i5LFFGsVyVeUlC0","y":"0R4b4FhmM1gdZwAY1X8QwpcLT02hvBRqGE9Tro40CcU"};;
 
 // À REMPLACER par vos vrais numéros avant de partager l'app :
 export const PRICE_LABEL = 'Prix : à définir (paiement unique, accès à vie)';
