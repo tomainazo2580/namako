@@ -1,5 +1,5 @@
 // Dictée vocale : le texte prononcé s'écrit dans la fiche. Utilise la reconnaissance vocale du navigateur.
-// Mode « sans connexion » si le téléphone propose un pack de langue installé, sinon Internet est nécessaire.
+// Connecté à Internet : service du navigateur (meilleure qualité). Sans connexion : pack de langue local si disponible.
 const SR = globalThis.SpeechRecognition || globalThis.webkitSpeechRecognition;
 export const supported = !!SR;
 
@@ -50,16 +50,31 @@ export function create({ onChunk, onInterim, onState, onError, lang = 'fr-FR' })
   let active = false;
   let lastFinal = '';
   let lastAt = 0;
+  let fails = 0;
+
+  // Une phrase à la fois puis relance : plus fiable que le mode « continu » sur Android
+  function resume() {
+    if (!active) { onState(false); return; }
+    try { rec.start(); fails = 0; }
+    catch {
+      if (++fails >= 4) { active = false; onError('La dictée n’a pas pu continuer. Touchez Dicter pour reprendre.'); onState(false); }
+      else setTimeout(resume, 300);
+    }
+  }
 
   async function start() {
     if (!supported) { onError('La dictée n’est pas disponible sur ce navigateur. Utilisez le micro du clavier.'); onState(false); return; }
+    const online = typeof navigator === 'undefined' || navigator.onLine !== false;
     let local = false;
-    if (SR.available) {
-      try { local = (await SR.available({ langs: [lang], processLocally: true })) === 'available'; } catch { /* mode connecté */ }
+    if (!online) {
+      if (SR.available) {
+        try { local = (await SR.available({ langs: [lang], processLocally: true })) === 'available'; } catch { /* indisponible */ }
+      }
+      if (!local) { onError(MESSAGES.network); onState(false); return; }
     }
     rec = new SR();
     rec.lang = lang;
-    rec.continuous = true;
+    rec.continuous = false;
     rec.interimResults = true;
     rec.maxAlternatives = 1;
     if (local) rec.processLocally = true;
@@ -70,7 +85,6 @@ export function create({ onChunk, onInterim, onState, onError, lang = 'fr-FR' })
         if (r.isFinal) {
           const chunk = applyCommands(r[0].transcript);
           const now = Date.now();
-          // Certains téléphones renvoient deux fois la même phrase : on ignore le doublon immédiat
           if (chunk && !(chunk === lastFinal && now - lastAt < 1500)) { onChunk(chunk); lastFinal = chunk; lastAt = now; }
         } else interim += r[0].transcript;
       }
@@ -79,18 +93,21 @@ export function create({ onChunk, onInterim, onState, onError, lang = 'fr-FR' })
     rec.onerror = (e) => {
       if (e.error === 'no-speech' || e.error === 'aborted') return;
       active = false;
-      onError(MESSAGES[e.error] || 'La dictée s’est arrêtée.');
+      onError(MESSAGES[e.error] || `La dictée s’est arrêtée (${e.error || 'erreur inconnue'}).`);
     };
-    // La reconnaissance s'arrête d'elle-même après un silence : on la relance tant que l'étudiant n'a pas arrêté
     rec.onend = () => {
-      if (!active) { onInterim(''); onState(false); return; }
-      try { rec.start(); } catch { active = false; onState(false); }
+      onInterim('');
+      if (!active) { onState(false); return; }
+      setTimeout(resume, 250);
     };
     active = true;
     try { rec.start(); onState(true, { local }); }
     catch { active = false; onError('La dictée n’a pas pu démarrer.'); onState(false); }
   }
 
-  function stop() { active = false; if (rec) { try { rec.stop(); } catch { onState(false); } } else onState(false); }
+  function stop() {
+    active = false;
+    if (rec) { try { rec.stop(); } catch { onState(false); } } else onState(false);
+  }
   return { start, stop };
 }

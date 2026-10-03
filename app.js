@@ -5,6 +5,7 @@ import * as LIC from './license.js';
 import * as CFG from './config.js';
 import * as SC from './scan.js';
 import * as Dict from './dictation.js';
+import * as Spell from './spell.js';
 
 const app = document.querySelector('#app');
 const dlg = document.querySelector('#dlg');
@@ -20,6 +21,7 @@ let session = null;
 let blocked = false;
 let dict = null;
 let dictFailed = false;
+const sessionIgnore = new Set();
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const days = (ts) => Math.floor((Date.now() - ts) / 864e5);
@@ -166,6 +168,42 @@ function importDialog(b) {
     <button class="ghost" data-act="close">Annuler</button></div>`);
 }
 
+/* ---------- Correcteur d'orthographe ---------- */
+
+async function runSpell() {
+  const out = dlg.querySelector('#spellout');
+  if (!out) return;
+  if (!Spell.loaded()) {
+    if (!DB.state.meta.spellReady) {
+      if (!navigator.onLine) { out.innerHTML = '<p class="note">La première utilisation du correcteur demande Internet (environ 2 Mo, une seule fois).</p>'; return; }
+      if (!confirm('Le correcteur télécharge un dictionnaire français d’environ 2 Mo, une seule fois. Continuer ?')) return;
+    }
+    out.innerHTML = '<p class="note">Chargement du dictionnaire…</p>';
+    try {
+      await Spell.load();
+      if (!DB.state.meta.spellReady) await DB.setMeta('spellReady', true);
+    } catch (err) { out.innerHTML = `<p class="note">${esc(err.message)}</p>`; return; }
+  }
+  showSpell();
+}
+
+function showSpell() {
+  const ta = dlg.querySelector('textarea[name=content]');
+  const out = dlg.querySelector('#spellout');
+  if (!ta || !out || !Spell.loaded()) return;
+  const ignore = new Set([...(DB.state.meta.userWords || []), ...sessionIgnore]);
+  const errors = Spell.findErrors(ta.value, ignore);
+  if (!errors.length) { out.innerHTML = '<p class="note">Aucune faute détectée. Les noms propres et les sigles ne sont pas vérifiés, ni la grammaire.</p>'; return; }
+  const rows = errors.slice(0, 15).map((e) => {
+    const sugg = Spell.suggest(e.word).map((s) => `<button type="button" data-act="spell-fix" data-from="${esc(e.low)}" data-to="${esc(s)}">${esc(s)}</button>`).join('');
+    return `<div class="item"><span><b>${esc(e.word)}</b>${e.count > 1 ? ` <small class="note">(${e.count} fois)</small>` : ''}</span>
+      <span class="chips">${sugg || '<small class="note">Pas de suggestion</small>'}
+      <button type="button" class="ghost" data-act="spell-ignore" data-w="${esc(e.low)}">Ignorer</button>
+      <button type="button" class="ghost" data-act="spell-add" data-w="${esc(e.low)}">Ajouter</button></span></div>`;
+  }).join('');
+  out.innerHTML = `<div class="spell"><p class="note">${plural(errors.length, 'mot à vérifier', 'mots à vérifier')}${errors.length > 15 ? ' (les 15 premiers sont affichés)' : ''}. Touchez une suggestion pour corriger. « Ignorer » convient aux noms propres et aux mots techniques, « Ajouter » les retient pour toujours.</p>${rows}</div>`;
+}
+
 /* ---------- Dictée vocale ---------- */
 
 function setDictState(text) {
@@ -181,12 +219,14 @@ function setDictBtn(on) {
 
 function insertDictated(ta, chunk) {
   const v = ta.value;
-  const a = ta.selectionStart ?? v.length;
-  const b = ta.selectionEnd ?? a;
+  const touched = ta.dataset.touched === '1';
+  const a = touched ? (ta.selectionStart ?? v.length) : v.length;
+  const b = touched ? (ta.selectionEnd ?? a) : a;
   const piece = Dict.fit(v.slice(0, a), chunk);
   ta.value = v.slice(0, a) + piece + v.slice(b);
   const pos = a + piece.length;
   ta.setSelectionRange(pos, pos);
+  ta.dataset.touched = '1';
   if (pos >= ta.value.length - 1) ta.scrollTop = ta.scrollHeight;
 }
 
@@ -439,11 +479,13 @@ function renderLesson(id) {
 const SYMS = ['²', '³', '√', 'π', '∑', '∫', '≤', '≥', '≠', '±', '×', '÷', '∞', 'α', 'β', 'θ', 'Δ', '→', '°', '½'];
 const toolbar = () => `<div class="tb" aria-label="Mise en forme et symboles">
   ${Dict.supported ? '<button type="button" id="dictbtn" data-act="dictate">Dicter</button>' : ''}
+  <button type="button" data-act="spell">Orthographe</button>
   <button type="button" data-ins="**" data-wrap="1" aria-label="Gras"><b>G</b></button>
   <button type="button" data-ins="# " data-line="1">Titre</button>
   <button type="button" data-ins="- " data-line="1">Liste</button>
   ${SYMS.map((s) => `<button type="button" data-ins="${s}">${s}</button>`).join('')}</div>
-  <p class="note" id="dictstate" role="status"></p>`;
+  <p class="note" id="dictstate" role="status"></p>
+  <div id="spellout"></div>`;
 
 function insertAt(btn) {
   const ta = dlg.querySelector('textarea');
@@ -545,6 +587,14 @@ async function onClick(e) {
     }
     case 'listen': return toggleSpeak(find('lessons', view.id));
     case 'dictate': return toggleDictation();
+    case 'spell': return runSpell();
+    case 'spell-fix': {
+      const ta = dlg.querySelector('textarea[name=content]');
+      ta.value = Spell.replaceAll(ta.value, el.dataset.from, el.dataset.to);
+      return showSpell();
+    }
+    case 'spell-ignore': sessionIgnore.add(el.dataset.w); return showSpell();
+    case 'spell-add': await DB.setMeta('userWords', [...(DB.state.meta.userWords || []), el.dataset.w]); return showSpell();
     case 'close': return closeDlg();
     case 'backup-now': {
       const r = await BK.exportBackup();
@@ -656,7 +706,8 @@ for (const [input, kind] of [[pdfInput, 'pdf'], [camInput, 'cam'], [galInput, 'g
   });
 }
 dlg.addEventListener('cancel', (e) => { if (dlg.querySelector('#pbar')) e.preventDefault(); });
-dlg.addEventListener('close', () => { if (dict) dict.stop(); });
+dlg.addEventListener('close', () => { if (dict) dict.stop(); Spell.release(); });
+dlg.addEventListener('focusin', (e) => { if (e.target.name === 'content') e.target.dataset.touched = '1'; });
 
 document.addEventListener('visibilitychange', async () => {
   if (document.visibilityState !== 'visible' || !LIC.lic.installId) return;
