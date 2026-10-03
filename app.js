@@ -4,7 +4,6 @@ import * as RV from './review.js';
 import * as LIC from './license.js';
 import * as CFG from './config.js';
 import * as SC from './scan.js';
-import * as Dict from './dictation.js';
 import * as Spell from './spell.js';
 
 const app = document.querySelector('#app');
@@ -19,8 +18,6 @@ let pending = null;
 let timer;
 let session = null;
 let blocked = false;
-let dict = null;
-let dictFailed = false;
 const sessionIgnore = new Set();
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -108,7 +105,7 @@ function go(v) { stopSpeak(); view = v; render(); scrollTo(0, 0); }
 /* ---------- Fenêtres ---------- */
 
 const openDlg = (html) => { dlg.innerHTML = html; if (!dlg.open) dlg.showModal(); };
-const closeDlg = () => { if (dict) dict.stop(); if (dlg.open) dlg.close(); };
+const closeDlg = () => { if (dlg.open) dlg.close(); };
 const message = (title, text) => openDlg(`<h2>${esc(title)}</h2><p>${esc(text)}</p><div class="actions"><button class="primary" data-act="close">Fermer</button></div>`);
 
 function subjectDialog(s) {
@@ -125,7 +122,7 @@ function lessonDialog(l, subjectId, draft) {
     ${draft ? '<p class="note">Relisez le texte reconnu et corrigez-le si besoin avant d’enregistrer.</p>' : ''}
     <label>Titre<input name="title" lang="fr" spellcheck="true" required maxlength="120" value="${esc(l?.title || draft?.title || '')}" autofocus></label>
     ${toolbar()}<label>Contenu<textarea name="content" lang="fr" spellcheck="true" autocorrect="on" rows="12">${esc(l?.content || draft?.content || '')}</textarea></label>
-    <p class="note">Les mots soulignés en rouge peuvent contenir une faute : touchez-les pour voir les suggestions du clavier.</p>
+    <p class="note">Pour écrire à la voix, touchez le micro de votre clavier. Le bouton Orthographe vérifie les fautes.</p>
     <label>Tags, séparés par des virgules<input name="tags" value="${esc((l?.tags || []).join(', '))}"></label>
     <div class="actions">${l ? `<button type="button" class="danger" data-act="trash-lesson" data-id="${l.id}">Mettre à la corbeille</button>` : ''}
     <button type="button" class="ghost" data-act="close">Annuler</button><button class="primary">Enregistrer</button></div></form>`);
@@ -202,50 +199,6 @@ function showSpell() {
       <button type="button" class="ghost" data-act="spell-add" data-w="${esc(e.low)}">Ajouter</button></span></div>`;
   }).join('');
   out.innerHTML = `<div class="spell"><p class="note">${plural(errors.length, 'mot à vérifier', 'mots à vérifier')}${errors.length > 15 ? ' (les 15 premiers sont affichés)' : ''}. Touchez une suggestion pour corriger. « Ignorer » convient aux noms propres et aux mots techniques, « Ajouter » les retient pour toujours.</p>${rows}</div>`;
-}
-
-/* ---------- Dictée vocale ---------- */
-
-function setDictState(text) {
-  const n = document.querySelector('#dictstate');
-  if (n) n.textContent = text;
-}
-function setDictBtn(on) {
-  const b = document.querySelector('#dictbtn');
-  if (!b) return;
-  b.textContent = on ? 'Arrêter' : 'Dicter';
-  b.classList.toggle('primary', on);
-}
-
-function insertDictated(ta, chunk) {
-  const v = ta.value;
-  const touched = ta.dataset.touched === '1';
-  const a = touched ? (ta.selectionStart ?? v.length) : v.length;
-  const b = touched ? (ta.selectionEnd ?? a) : a;
-  const piece = Dict.fit(v.slice(0, a), chunk);
-  ta.value = v.slice(0, a) + piece + v.slice(b);
-  const pos = a + piece.length;
-  ta.setSelectionRange(pos, pos);
-  ta.dataset.touched = '1';
-  if (pos >= ta.value.length - 1) ta.scrollTop = ta.scrollHeight;
-}
-
-function toggleDictation() {
-  const ta = dlg.querySelector('textarea[name=content]');
-  if (!ta) return;
-  if (dict) return dict.stop();
-  dictFailed = false;
-  dict = Dict.create({
-    onChunk: (chunk) => insertDictated(ta, chunk),
-    onInterim: (t) => { if (dict) setDictState(t ? `… ${t}` : 'Parlez, je vous écoute.'); },
-    onState: (on, info) => {
-      setDictBtn(on);
-      if (on) setDictState(`Dictée en cours (${info.local ? 'sans connexion' : 'Internet nécessaire'}). Dites « virgule », « point » ou « à la ligne ».`);
-      else { dict = null; if (!dictFailed) setDictState(''); }
-    },
-    onError: (msg) => { dictFailed = true; setDictState(msg); },
-  });
-  dict.start();
 }
 
 /* ---------- Importer : PDF et scan de cours ---------- */
@@ -478,13 +431,11 @@ function renderLesson(id) {
 // Barre d'outils de l'éditeur : mise en forme et symboles scientifiques
 const SYMS = ['²', '³', '√', 'π', '∑', '∫', '≤', '≥', '≠', '±', '×', '÷', '∞', 'α', 'β', 'θ', 'Δ', '→', '°', '½'];
 const toolbar = () => `<div class="tb" aria-label="Mise en forme et symboles">
-  ${Dict.supported ? '<button type="button" id="dictbtn" data-act="dictate">Dicter</button>' : ''}
   <button type="button" data-act="spell">Orthographe</button>
   <button type="button" data-ins="**" data-wrap="1" aria-label="Gras"><b>G</b></button>
   <button type="button" data-ins="# " data-line="1">Titre</button>
   <button type="button" data-ins="- " data-line="1">Liste</button>
   ${SYMS.map((s) => `<button type="button" data-ins="${s}">${s}</button>`).join('')}</div>
-  <p class="note" id="dictstate" role="status"></p>
   <div id="spellout"></div>`;
 
 function insertAt(btn) {
@@ -586,7 +537,6 @@ async function onClick(e) {
       return render();
     }
     case 'listen': return toggleSpeak(find('lessons', view.id));
-    case 'dictate': return toggleDictation();
     case 'spell': return runSpell();
     case 'spell-fix': {
       const ta = dlg.querySelector('textarea[name=content]');
@@ -706,8 +656,7 @@ for (const [input, kind] of [[pdfInput, 'pdf'], [camInput, 'cam'], [galInput, 'g
   });
 }
 dlg.addEventListener('cancel', (e) => { if (dlg.querySelector('#pbar')) e.preventDefault(); });
-dlg.addEventListener('close', () => { if (dict) dict.stop(); Spell.release(); });
-dlg.addEventListener('focusin', (e) => { if (e.target.name === 'content') e.target.dataset.touched = '1'; });
+dlg.addEventListener('close', () => Spell.release());
 
 document.addEventListener('visibilitychange', async () => {
   if (document.visibilityState !== 'visible' || !LIC.lic.installId) return;
