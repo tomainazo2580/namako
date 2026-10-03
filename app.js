@@ -3,6 +3,8 @@ import * as BK from './backup.js';
 import * as RV from './review.js';
 import * as LIC from './license.js';
 import * as CFG from './config.js';
+import * as SC from './scan.js';
+import * as Dict from './dictation.js';
 
 const app = document.querySelector('#app');
 const dlg = document.querySelector('#dlg');
@@ -16,6 +18,8 @@ let pending = null;
 let timer;
 let session = null;
 let blocked = false;
+let dict = null;
+let dictFailed = false;
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const days = (ts) => Math.floor((Date.now() - ts) / 864e5);
@@ -81,7 +85,7 @@ function renderSubject(id) {
   if (!s || s.deletedAt) return go({ name: 'home' });
   const ls = DB.activeLessons(id).sort((a, b) => b.updatedAt - a.updatedAt);
   app.innerHTML = `
-    <header class="top"><button class="ghost" data-act="back">Retour</button><button class="ghost" data-act="import-txt">Importer un texte</button><button class="ghost" data-act="edit-subject" data-id="${id}">Modifier</button></header>
+    <header class="top"><button class="ghost" data-act="back">Retour</button><button class="ghost" data-act="import-menu">Importer</button><button class="ghost" data-act="edit-subject" data-id="${id}">Modifier</button></header>
     <h1 class="sh" style="--c:${s.color}">${esc(s.name)}</h1><p class="sub">${plural(ls.length, 'leçon', 'leçons')}</p>
     ${RV.dueLessons(id).length ? `<button class="primary" style="margin-top:12px" data-act="review" data-id="${id}">Réviser cette matière (${RV.dueLessons(id).length})</button>` : ''}
     <section style="margin-top:16px">${ls.length ? ls.map((l) => lessonHtml(l, s, false)).join('') : '<p class="empty">Aucune leçon ici. Ajoutez la première.</p>'}</section>
@@ -102,7 +106,7 @@ function go(v) { stopSpeak(); view = v; render(); scrollTo(0, 0); }
 /* ---------- Fenêtres ---------- */
 
 const openDlg = (html) => { dlg.innerHTML = html; if (!dlg.open) dlg.showModal(); };
-const closeDlg = () => { if (dlg.open) dlg.close(); };
+const closeDlg = () => { if (dict) dict.stop(); if (dlg.open) dlg.close(); };
 const message = (title, text) => openDlg(`<h2>${esc(title)}</h2><p>${esc(text)}</p><div class="actions"><button class="primary" data-act="close">Fermer</button></div>`);
 
 function subjectDialog(s) {
@@ -114,10 +118,12 @@ function subjectDialog(s) {
     <button type="button" class="ghost" data-act="close">Annuler</button><button class="primary">${s ? 'Enregistrer' : 'Créer la matière'}</button></div></form>`);
 }
 
-function lessonDialog(l, subjectId) {
-  openDlg(`<form data-form="lesson" data-id="${l?.id || ''}" data-subject="${l?.subjectId || subjectId}"><h2>${l ? 'Modifier la leçon' : 'Nouvelle leçon'}</h2>
-    <label>Titre<input name="title" required maxlength="120" value="${esc(l?.title || '')}" autofocus></label>
-    ${toolbar()}<label>Contenu<textarea name="content" rows="12">${esc(l?.content || '')}</textarea></label>
+function lessonDialog(l, subjectId, draft) {
+  openDlg(`<form data-form="lesson" data-id="${l?.id || ''}" data-subject="${l?.subjectId || subjectId}" data-source="${esc(draft?.source || '')}"><h2>${l ? 'Modifier la leçon' : 'Nouvelle leçon'}</h2>
+    ${draft ? '<p class="note">Relisez le texte reconnu et corrigez-le si besoin avant d’enregistrer.</p>' : ''}
+    <label>Titre<input name="title" lang="fr" spellcheck="true" required maxlength="120" value="${esc(l?.title || draft?.title || '')}" autofocus></label>
+    ${toolbar()}<label>Contenu<textarea name="content" lang="fr" spellcheck="true" autocorrect="on" rows="12">${esc(l?.content || draft?.content || '')}</textarea></label>
+    <p class="note">Les mots soulignés en rouge peuvent contenir une faute : touchez-les pour voir les suggestions du clavier.</p>
     <label>Tags, séparés par des virgules<input name="tags" value="${esc((l?.tags || []).join(', '))}"></label>
     <div class="actions">${l ? `<button type="button" class="danger" data-act="trash-lesson" data-id="${l.id}">Mettre à la corbeille</button>` : ''}
     <button type="button" class="ghost" data-act="close">Annuler</button><button class="primary">Enregistrer</button></div></form>`);
@@ -158,6 +164,110 @@ function importDialog(b) {
     <div class="actions col"><button class="primary" data-act="apply" data-mode="merge">Fusionner avec mes cours</button>
     <button class="danger" data-act="apply" data-mode="replace">Remplacer mes cours</button>
     <button class="ghost" data-act="close">Annuler</button></div>`);
+}
+
+/* ---------- Dictée vocale ---------- */
+
+function setDictState(text) {
+  const n = document.querySelector('#dictstate');
+  if (n) n.textContent = text;
+}
+function setDictBtn(on) {
+  const b = document.querySelector('#dictbtn');
+  if (!b) return;
+  b.textContent = on ? 'Arrêter' : 'Dicter';
+  b.classList.toggle('primary', on);
+}
+
+function insertDictated(ta, chunk) {
+  const v = ta.value;
+  const a = ta.selectionStart ?? v.length;
+  const b = ta.selectionEnd ?? a;
+  const piece = Dict.fit(v.slice(0, a), chunk);
+  ta.value = v.slice(0, a) + piece + v.slice(b);
+  const pos = a + piece.length;
+  ta.setSelectionRange(pos, pos);
+  if (pos >= ta.value.length - 1) ta.scrollTop = ta.scrollHeight;
+}
+
+function toggleDictation() {
+  const ta = dlg.querySelector('textarea[name=content]');
+  if (!ta) return;
+  if (dict) return dict.stop();
+  dictFailed = false;
+  dict = Dict.create({
+    onChunk: (chunk) => insertDictated(ta, chunk),
+    onInterim: (t) => { if (dict) setDictState(t ? `… ${t}` : 'Parlez, je vous écoute.'); },
+    onState: (on, info) => {
+      setDictBtn(on);
+      if (on) setDictState(`Dictée en cours (${info.local ? 'sans connexion' : 'Internet nécessaire'}). Dites « virgule », « point » ou « à la ligne ».`);
+      else { dict = null; if (!dictFailed) setDictState(''); }
+    },
+    onError: (msg) => { dictFailed = true; setDictState(msg); },
+  });
+  dict.start();
+}
+
+/* ---------- Importer : PDF et scan de cours ---------- */
+
+function importMenu() {
+  openDlg(`<h2>Importer dans cette matière</h2>
+    <div class="actions col">
+      <button class="primary" data-act="import-cam">Photographier un cours (scan)</button>
+      <button data-act="import-gal">Choisir des photos dans la galerie</button>
+      <button data-act="import-pdf">Document PDF</button>
+      <button data-act="import-txt">Fichier texte (.txt, .md)</button>
+      <button class="ghost" data-act="close">Annuler</button></div>
+    <p class="note">Pour un bon scan : page bien à plat, pleine lumière, texte droit et net. Vous pourrez corriger le texte reconnu avant d’enregistrer.</p>`);
+}
+
+function openProgress() {
+  openDlg(`<h2>Import en cours</h2><p id="plabel">Préparation…</p>
+    <div class="prog"><i id="pbar" style="width:3%"></i></div>
+    <div class="actions"><button data-act="cancel-scan">Annuler</button></div>`);
+}
+
+function progress(label, pct) {
+  const l = document.querySelector('#plabel');
+  const b = document.querySelector('#pbar');
+  if (l) l.textContent = label;
+  if (b) b.style.width = Math.max(3, Math.round(pct * 100)) + '%';
+}
+
+async function runImport(kind, files) {
+  if (view.name !== 'subject') return;
+  const subjectId = view.id;
+  const ready = DB.state.meta.ocrReady;
+  if (kind !== 'pdf' && !ready) {
+    if (!navigator.onLine) return message('Connexion nécessaire', 'La première utilisation du scan demande Internet (environ 7 Mo, une seule fois). Ensuite, il fonctionne hors ligne.');
+    if (!confirm('La première utilisation du scan télécharge environ 7 Mo, une seule fois. Continuer ?')) return;
+  }
+  openProgress();
+  let usedOcr = kind !== 'pdf';
+  try {
+    let text, title, source = usedOcr ? 'ocr' : 'pdf';
+    if (kind === 'pdf') {
+      title = files[0].name.replace(/\.[^.]+$/, '').slice(0, 120);
+      text = await SC.importPdf(files[0], progress);
+      if (!text.trim()) {
+        if (!ready && !navigator.onLine) throw new Error('Ce PDF est un scan : sa lecture demande le module de scan, à télécharger d’abord avec Internet.');
+        if (!confirm('Ce PDF ne contient pas de texte (c’est probablement un scan). Lire ses pages avec le module de scan ? Cela peut prendre plusieurs minutes.')) return closeDlg();
+        usedOcr = true;
+        source = 'ocr';
+        text = await SC.ocrPdf(files[0], progress);
+      }
+    } else {
+      title = 'Scan du ' + new Date().toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
+      text = await SC.ocrImages(files, progress);
+    }
+    if (usedOcr && !ready) await DB.setMeta('ocrReady', true);
+    closeDlg();
+    if (!text.trim()) return message('Aucun texte trouvé', 'Aucun texte n’a pu être lu. Pour un scan, essayez avec plus de lumière et une photo bien nette.');
+    lessonDialog(null, subjectId, { title, content: text, source });
+  } catch (err) {
+    if (err.message === 'annulé') return closeDlg();
+    message('Import impossible', err.message);
+  }
 }
 
 /* ---------- Activation et mise à jour forcée ---------- */
@@ -328,10 +438,12 @@ function renderLesson(id) {
 // Barre d'outils de l'éditeur : mise en forme et symboles scientifiques
 const SYMS = ['²', '³', '√', 'π', '∑', '∫', '≤', '≥', '≠', '±', '×', '÷', '∞', 'α', 'β', 'θ', 'Δ', '→', '°', '½'];
 const toolbar = () => `<div class="tb" aria-label="Mise en forme et symboles">
+  ${Dict.supported ? '<button type="button" id="dictbtn" data-act="dictate">Dicter</button>' : ''}
   <button type="button" data-ins="**" data-wrap="1" aria-label="Gras"><b>G</b></button>
   <button type="button" data-ins="# " data-line="1">Titre</button>
   <button type="button" data-ins="- " data-line="1">Liste</button>
-  ${SYMS.map((s) => `<button type="button" data-ins="${s}">${s}</button>`).join('')}</div>`;
+  ${SYMS.map((s) => `<button type="button" data-ins="${s}">${s}</button>`).join('')}</div>
+  <p class="note" id="dictstate" role="status"></p>`;
 
 function insertAt(btn) {
   const ta = dlg.querySelector('textarea');
@@ -420,13 +532,19 @@ async function onClick(e) {
     }
     case 'end-review': session = null; return go({ name: 'home' });
     case 'edit-lesson': return lessonDialog(find('lessons', id));
-    case 'import-txt': return txtInput.click();
+    case 'import-menu': return importMenu();
+    case 'import-txt': closeDlg(); return txtInput.click();
+    case 'import-pdf': closeDlg(); return pdfInput.click();
+    case 'import-cam': closeDlg(); return camInput.click();
+    case 'import-gal': closeDlg(); return galInput.click();
+    case 'cancel-scan': SC.cancel(); return closeDlg();
     case 'font-': case 'font+': {
       const fs = Math.min(30, Math.max(14, (DB.state.meta.fontSize || 18) + (act === 'font+' ? 2 : -2)));
       await DB.setMeta('fontSize', fs);
       return render();
     }
     case 'listen': return toggleSpeak(find('lessons', view.id));
+    case 'dictate': return toggleDictation();
     case 'close': return closeDlg();
     case 'backup-now': {
       const r = await BK.exportBackup();
@@ -467,7 +585,7 @@ dlg.addEventListener('submit', async (e) => {
     const title = String(d.get('title')).trim();
     if (!title) return;
     const tags = [...new Map(String(d.get('tags')).split(',').map((t) => t.trim()).filter(Boolean).map((t) => [t.toLowerCase(), t])).values()];
-    const base = id ? find('lessons', id) : { id: DB.uid(), subjectId: f.dataset.subject, createdAt: Date.now(), deletedAt: null, mastery: 0, nextReviewAt: null };
+    const base = id ? find('lessons', id) : { id: DB.uid(), subjectId: f.dataset.subject, createdAt: Date.now(), deletedAt: null, mastery: 0, nextReviewAt: null, source: f.dataset.source || 'manual' };
     await DB.put('lessons', { ...base, title, content: String(d.get('content')), tags });
   }
   closeDlg();
@@ -486,7 +604,7 @@ dlg.addEventListener('pointerdown', (e) => { if (e.target.closest('[data-ins]'))
 dlg.addEventListener('click', (e) => {
   const b = e.target.closest('[data-ins]');
   if (b) return insertAt(b);
-  if (e.target === dlg) closeDlg(); else onClick(e);
+  if (e.target === dlg) { if (!dlg.querySelector('#pbar')) closeDlg(); } else onClick(e);
 });
 app.addEventListener('input', (e) => {
   if (e.target.id !== 'q') return;
@@ -520,6 +638,25 @@ txtInput.addEventListener('change', async (e) => {
   const l = await DB.put('lessons', { id: DB.uid(), subjectId: view.id, title: f.name.replace(/\.[^.]+$/, '').slice(0, 120) || 'Leçon importée', content: text, tags: [], source: 'txt', createdAt: Date.now(), deletedAt: null, mastery: 0, nextReviewAt: null });
   go({ name: 'lesson', id: l.id, from: view });
 });
+
+const mkInput = (accept, extra = {}) => {
+  const i = Object.assign(document.createElement('input'), { type: 'file', accept, hidden: true, ...extra });
+  document.body.append(i);
+  return i;
+};
+const pdfInput = mkInput('application/pdf,.pdf');
+const camInput = mkInput('image/*');
+camInput.setAttribute('capture', 'environment');
+const galInput = mkInput('image/*', { multiple: true });
+for (const [input, kind] of [[pdfInput, 'pdf'], [camInput, 'cam'], [galInput, 'gal']]) {
+  input.addEventListener('change', (e) => {
+    const files = [...e.target.files];
+    e.target.value = '';
+    if (files.length) runImport(kind, files);
+  });
+}
+dlg.addEventListener('cancel', (e) => { if (dlg.querySelector('#pbar')) e.preventDefault(); });
+dlg.addEventListener('close', () => { if (dict) dict.stop(); });
 
 document.addEventListener('visibilitychange', async () => {
   if (document.visibilityState !== 'visible' || !LIC.lic.installId) return;
