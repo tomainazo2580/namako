@@ -83,3 +83,5 @@ a.btn{display:flex;align-items:center;justify-content:center;min-height:48px;pad
 .spell .item{flex-direction:column;align-items:flex-start}
 .chips{display:flex;flex-wrap:wrap;gap:6px}
 .chips button{min-height:40px;padding:0 12px}
+.qr{display:flex;justify-content:center;margin:12px 0}
+.qr svg{width:min(78vw,280px);height:auto;border-radius:8px}

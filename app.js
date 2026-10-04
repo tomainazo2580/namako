@@ -5,6 +5,7 @@ import * as LIC from './license.js';
 import * as CFG from './config.js';
 import * as SC from './scan.js';
 import * as Spell from './spell.js';
+import { qrSvg } from './qr.js';
 
 const app = document.querySelector('#app');
 const dlg = document.querySelector('#dlg');
@@ -86,6 +87,7 @@ function renderSubject(id) {
   app.innerHTML = `
     <header class="top"><button class="ghost" data-act="back">Retour</button><button class="ghost" data-act="import-menu">Importer</button><button class="ghost" data-act="edit-subject" data-id="${id}">Modifier</button></header>
     <h1 class="sh" style="--c:${s.color}">${esc(s.name)}</h1><p class="sub">${plural(ls.length, 'leçon', 'leçons')}</p>
+    <button class="ghost" style="padding:0;margin-top:4px" data-act="share-subject" data-id="${id}">Partager cette matière</button>
     ${RV.dueLessons(id).length ? `<button class="primary" style="margin-top:12px" data-act="review" data-id="${id}">Réviser cette matière (${RV.dueLessons(id).length})</button>` : ''}
     <section style="margin-top:16px">${ls.length ? ls.map((l) => lessonHtml(l, s, false)).join('') : '<p class="empty">Aucune leçon ici. Ajoutez la première.</p>'}</section>
     <button class="fab" data-act="new-lesson" data-id="${id}">Nouvelle leçon</button>`;
@@ -136,7 +138,8 @@ async function backupDialog() {
   openDlg(`<h2>Sauvegarde</h2>
     <p>${last ? `Dernière sauvegarde : ${fmtDate(last)}.` : 'Aucune sauvegarde pour l’instant.'}</p>
     <div class="actions col"><button class="primary" data-act="backup-now">Sauvegarder mes cours</button>
-    <button data-act="restore">Restaurer depuis un fichier</button>
+    <button data-act="restore">Restaurer ou recevoir un fichier</button>
+    <button data-act="share-app">Partager l’application (QR Code)</button>
     ${LIC.lic.enforced ? `<button data-act="activate">${LIC.lic.licensed ? 'Mon activation' : 'Activer Namako'}</button>` : ''}
     <button data-act="trash">Corbeille (${t.subjects.length + t.lessons.length})</button></div>
     <p class="note">Stockage protégé : <b>${persisted ? 'oui' : 'non'}</b>.${est?.usage != null ? ` Espace utilisé : ${(est.usage / 1048576).toFixed(1)} Mo.` : ''}</p>
@@ -156,13 +159,57 @@ function trashDialog() {
     <div class="actions"><button class="ghost" data-act="menu">Retour</button></div>`);
 }
 
+function subjectReceivedDialog(b) {
+  const s = b.data.subjects[0];
+  const exists = DB.state.subjects.some((x) => x.id === s.id && !x.deletedAt);
+  openDlg(`<h2>Matière reçue</h2>
+    <p><b>${esc(String(s.name).slice(0, 60))}</b> : ${plural(b.data.lessons.length, 'leçon', 'leçons')}.</p>
+    <p class="note">${exists ? 'Vous avez déjà cette matière : les nouvelles leçons seront ajoutées et les leçons modifiées mises à jour. Votre progression de révision est conservée.' : 'Elle sera ajoutée à vos matières, à côté de vos cours actuels. Rien n’est effacé.'}</p>
+    <div class="actions col"><button class="primary" data-act="apply" data-mode="subject">Ajouter cette matière</button><button class="ghost" data-act="close">Annuler</button></div>`);
+}
+
 function importDialog(b) {
+  if (b.kind === 'subject') return subjectReceivedDialog(b);
   openDlg(`<h2>Restaurer une sauvegarde</h2>
     <p>Sauvegarde du ${fmtDate(b.exportedAt)} : ${plural(b.data.subjects.length, 'matière', 'matières')} et ${plural(b.data.lessons.length, 'leçon', 'leçons')}.</p>
     <p class="note">Fusionner garde vos cours actuels et ajoute ceux de la sauvegarde, sans doublons. Remplacer efface d’abord vos cours actuels.</p>
     <div class="actions col"><button class="primary" data-act="apply" data-mode="merge">Fusionner avec mes cours</button>
     <button class="danger" data-act="apply" data-mode="replace">Remplacer mes cours</button>
     <button class="ghost" data-act="close">Annuler</button></div>`);
+}
+
+/* ---------- Partage : matière et application ---------- */
+
+async function shareSubject(id) {
+  const s = find('subjects', id);
+  const lessons = DB.activeLessons(id);
+  if (!s || !lessons.length) return message('Rien à partager', 'Cette matière ne contient aucune leçon pour l’instant.');
+  const r = await BK.exportSubject(s, lessons);
+  if (!r) return;
+  message(r === 'shared' ? 'Matière prête' : 'Fichier enregistré',
+    r === 'shared'
+      ? 'Votre camarade doit ouvrir Namako, puis Sauvegarde, puis « Restaurer ou recevoir un fichier », et choisir le fichier reçu. Votre progression de révision n’est pas partagée.'
+      : 'Le partage n’est pas disponible ici. Le fichier est dans vos Téléchargements : envoyez-le par WhatsApp. Votre camarade l’ouvre dans Namako, menu Sauvegarde, « Restaurer ou recevoir un fichier ».');
+}
+
+const appLink = () => new URL('./', location.href).href;
+
+function qrDialog() {
+  const url = appLink();
+  let svg = '';
+  try { svg = qrSvg(url); } catch { /* lien trop long : on garde seulement le texte */ }
+  openDlg(`<h2>Partager Namako</h2>
+    <p>Votre camarade scanne ce QR Code avec l’appareil photo de son téléphone : Namako s’ouvre et il peut l’installer sur son écran d’accueil.</p>
+    ${svg ? `<div class="qr" role="img" aria-label="QR Code du lien de Namako">${svg}</div>` : ''}
+    <p class="note" style="word-break:break-all">${esc(url)}</p>
+    <div class="actions col"><button data-act="copy" data-text="${esc(url)}">Copier le lien</button>
+    ${navigator.share ? '<button class="primary" data-act="share-link">Envoyer le lien</button>' : ''}
+    <button class="ghost" data-act="close">Fermer</button></div>`);
+}
+
+async function shareLink() {
+  try { await navigator.share({ title: 'Namako', text: 'Révise tes cours avec Namako, même sans connexion :', url: appLink() }); }
+  catch { /* annulé */ }
 }
 
 /* ---------- Correcteur d'orthographe ---------- */
@@ -531,6 +578,9 @@ async function onClick(e) {
     case 'import-cam': closeDlg(); return camInput.click();
     case 'import-gal': closeDlg(); return galInput.click();
     case 'cancel-scan': SC.cancel(); return closeDlg();
+    case 'share-subject': return shareSubject(id);
+    case 'share-app': return qrDialog();
+    case 'share-link': return shareLink();
     case 'font-': case 'font+': {
       const fs = Math.min(30, Math.max(14, (DB.state.meta.fontSize || 18) + (act === 'font+' ? 2 : -2)));
       await DB.setMeta('fontSize', fs);
@@ -561,6 +611,14 @@ async function onClick(e) {
     case 'delete-item': if (confirm('Supprimer définitivement ? Cette action est irréversible.')) { await DB.removeForever(store, id); trashDialog(); render(); } return;
     case 'install': installEvt.prompt(); await installEvt.userChoice; installEvt = null; return render();
     case 'apply': {
+      if (mode === 'subject') {
+        try {
+          const r = await BK.applySubject(pending);
+          pending = null;
+          render();
+          return message('Matière ajoutée', `« ${r.name} » : ${plural(r.added, 'leçon ajoutée', 'leçons ajoutées')}, ${plural(r.updated, 'leçon mise à jour', 'leçons mises à jour')}.`);
+        } catch (err) { return message('Ajout impossible', err.message); }
+      }
       if (mode === 'replace' && !confirm('Vos cours actuels seront effacés et remplacés. Continuer ?')) return;
       const r = await BK.applyBackup(pending, mode);
       pending = null;

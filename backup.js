@@ -16,35 +16,101 @@ export async function buildBackup() {
   return { app: 'namako', formatVersion: FORMAT_VERSION, exportedAt: Date.now(), data, checksum: await sha256(JSON.stringify(data)) };
 }
 
-// Renvoie null si l'étudiant annule, 'shared' si le partage a eu lieu, 'downloaded' si le fichier a été téléchargé.
-export async function exportBackup() {
-  const json = JSON.stringify(await buildBackup());
-  const stamp = new Date().toISOString().slice(0, 10);
-  // Partage en .txt : les navigateurs acceptent ce type pour WhatsApp et les autres applications.
-  const shareFile = new File([json], `namako-${stamp}.txt`, { type: 'text/plain' });
+export const io = { put: putRaw };
+
+// Partage via WhatsApp et autres applications (fichier .txt) ou, à défaut, téléchargement (.namako).
+// Renvoie null si l'étudiant annule, 'shared' ou 'downloaded'.
+async function deliver(json, base, title, text) {
+  const shareFile = new File([json], `${base}.txt`, { type: 'text/plain' });
   let shared = false;
   if (navigator.canShare && navigator.canShare({ files: [shareFile] })) {
-    try { await navigator.share({ files: [shareFile], title: 'Sauvegarde Namako', text: 'Sauvegarde de mes cours Namako' }); shared = true; }
+    try { await navigator.share({ files: [shareFile], title, text }); shared = true; }
     catch (e) { if (e.name === 'AbortError') return null; }
   }
   if (!shared) {
     const url = URL.createObjectURL(new Blob([json], { type: 'application/octet-stream' }));
     const a = document.createElement('a');
-    a.href = url; a.download = `namako-${stamp}.namako`;
+    a.href = url; a.download = `${base}.namako`;
     document.body.append(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 10000);
   }
-  await setMeta('lastBackupAt', Date.now());
   return shared ? 'shared' : 'downloaded';
 }
 
+export async function exportBackup() {
+  const stamp = new Date().toISOString().slice(0, 10);
+  const r = await deliver(JSON.stringify(await buildBackup()), `namako-${stamp}`, 'Sauvegarde Namako', 'Sauvegarde de mes cours Namako');
+  if (r) await setMeta('lastBackupAt', Date.now());
+  return r;
+}
+
+/* ---- Partage d'une seule matière entre étudiants ---- */
+const slug = (s) => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 30) || 'matiere';
+
+// La progression de révision n'est jamais partagée : chaque étudiant révise à son rythme
+export async function buildSubjectShare(subject, lessons) {
+  const data = {
+    subjects: [{ id: subject.id, name: subject.name, color: subject.color, createdAt: subject.createdAt, updatedAt: subject.updatedAt, deletedAt: null }],
+    lessons: lessons.map((l) => ({ id: l.id, subjectId: l.subjectId, title: l.title, content: l.content, tags: l.tags || [], source: l.source || 'manual', createdAt: l.createdAt, updatedAt: l.updatedAt, deletedAt: null })),
+  };
+  return { app: 'namako', formatVersion: FORMAT_VERSION, kind: 'subject', exportedAt: Date.now(), data, checksum: await sha256(JSON.stringify(data)) };
+}
+
+export async function exportSubject(subject, lessons) {
+  const stamp = new Date().toISOString().slice(0, 10);
+  return deliver(JSON.stringify(await buildSubjectShare(subject, lessons)), `namako-${slug(subject.name)}-${stamp}`,
+    `Matière Namako : ${subject.name}`, `Matière « ${subject.name} » à ouvrir dans Namako`);
+}
+
+const COLOR = /^#[0-9a-fA-F]{6}$/;
+const str = (v, max) => String(v ?? '').slice(0, max);
+const num = (v, d) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : d);
+
+// Un fichier reçu n'est jamais fiable : on revérifie et on nettoie chaque champ avant de l'enregistrer.
+// Les leçons déjà présentes gardent leur progression de révision.
+export async function applySubject(b) {
+  const raw = b.data.subjects[0];
+  const id = str(raw && raw.id, 80);
+  if (b.kind !== 'subject' || b.data.subjects.length !== 1 || !id) throw new Error('Cette matière partagée est invalide.');
+  const now = Date.now();
+  const local = state.subjects.find((x) => x.id === id);
+  const name = local ? local.name : (str(raw.name, 60).trim() || 'Matière reçue');
+  if (!local) {
+    await io.put('subjects', { id, name, color: COLOR.test(raw.color) ? raw.color : '#0E7C86', createdAt: num(raw.createdAt, now), updatedAt: now, deletedAt: null });
+  } else if (local.deletedAt) {
+    await io.put('subjects', { ...local, deletedAt: null });
+  }
+  let added = 0, updated = 0;
+  for (const r of b.data.lessons.slice(0, 500)) {
+    const lid = str(r && r.id, 80);
+    if (!lid || str(r.subjectId, 80) !== id) continue;
+    const fields = {
+      title: str(r.title, 120).trim() || 'Sans titre',
+      content: str(r.content, 500000),
+      tags: Array.isArray(r.tags) ? [...new Set(r.tags.slice(0, 20).map((t) => str(t, 40).trim()).filter(Boolean))] : [],
+      source: str(r.source, 10) || 'manual',
+    };
+    const cur = state.lessons.find((x) => x.id === lid);
+    if (!cur) {
+      await io.put('lessons', { id: lid, subjectId: id, ...fields, createdAt: num(r.createdAt, now), updatedAt: num(r.updatedAt, now), deletedAt: null, mastery: 0, nextReviewAt: null });
+      added++;
+    } else if (cur.subjectId === id && !cur.deletedAt && num(r.updatedAt, 0) > cur.updatedAt) {
+      await io.put('lessons', { ...cur, ...fields, updatedAt: num(r.updatedAt, now) });
+      updated++;
+    }
+  }
+  return { name, added, updated };
+}
+
 export async function readBackup(file) {
+  if (file.size > 8e6) throw new Error('Ce fichier est trop volumineux pour être une sauvegarde Namako.');
   let b;
   try { b = JSON.parse(await file.text()); } catch { throw new Error('Ce fichier n’est pas une sauvegarde Namako.'); }
   if (b.app !== 'namako' || !b.data || !Array.isArray(b.data.subjects) || !Array.isArray(b.data.lessons))
     throw new Error('Ce fichier n’est pas une sauvegarde Namako.');
   if (b.formatVersion > FORMAT_VERSION) throw new Error('Cette sauvegarde vient d’une version plus récente de Namako. Mettez l’app à jour.');
   if ((await sha256(JSON.stringify(b.data))) !== b.checksum) throw new Error('Le fichier est abîmé ou a été modifié. Demandez-en une nouvelle copie.');
+  if (b.kind === 'subject' && b.data.subjects.length !== 1) throw new Error('Cette matière partagée est invalide.');
   return b;
 }
 
@@ -55,8 +121,8 @@ export async function applyBackup(b, mode) {
   for (const store of ['subjects', 'lessons', 'reviews']) {
     for (const item of b.data[store] || []) {
       const cur = state[store].find((x) => x.id === item.id);
-      if (!cur) { await putRaw(store, item); added++; }
-      else if (item.updatedAt > cur.updatedAt) { await putRaw(store, item); updated++; }
+      if (!cur) { await io.put(store, item); added++; }
+      else if (item.updatedAt > cur.updatedAt) { await io.put(store, item); updated++; }
     }
   }
   return { added, updated };
