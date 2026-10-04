@@ -85,3 +85,11 @@ a.btn{display:flex;align-items:center;justify-content:center;min-height:48px;pad
 .chips button{min-height:40px;padding:0 12px}
 .qr{display:flex;justify-content:center;margin:12px 0}
 .qr svg{width:min(78vw,280px);height:auto;border-radius:8px}
+.chk{display:flex;align-items:center;gap:10px;min-height:44px;margin:0;font-weight:400}
+.chk input{width:22px;height:22px;min-height:0;padding:0;margin:0;flex:none}
+.chk.sub2{padding-left:30px}
+.shgroup{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:6px 12px;margin-top:12px}
+.dot{display:inline-block;width:10px;height:10px;border-radius:50%;flex:none}
+.mh{margin:22px 0 8px;font-size:14px;color:var(--muted);font-weight:600}
+.steps{padding-left:20px;line-height:1.6}
+.steps li{margin-bottom:8px}

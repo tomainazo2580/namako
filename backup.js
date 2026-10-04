@@ -44,46 +44,54 @@ export async function exportBackup() {
   return r;
 }
 
-/* ---- Partage d'une seule matière entre étudiants ---- */
-const slug = (s) => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 30) || 'matiere';
+/* ---- Partage de cours entre étudiants (matières entières ou leçons choisies) ---- */
+export const isShare = (b) => b.kind === 'share' || b.kind === 'subject';   // 'subject' = ancien format, toujours accepté
+
+const slug = (s) => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 30) || 'cours';
 
 // La progression de révision n'est jamais partagée : chaque étudiant révise à son rythme
-export async function buildSubjectShare(subject, lessons) {
+export async function buildShare(subjects, lessons) {
   const data = {
-    subjects: [{ id: subject.id, name: subject.name, color: subject.color, createdAt: subject.createdAt, updatedAt: subject.updatedAt, deletedAt: null }],
+    subjects: subjects.map((s) => ({ id: s.id, name: s.name, color: s.color, createdAt: s.createdAt, updatedAt: s.updatedAt, deletedAt: null })),
     lessons: lessons.map((l) => ({ id: l.id, subjectId: l.subjectId, title: l.title, content: l.content, tags: l.tags || [], source: l.source || 'manual', createdAt: l.createdAt, updatedAt: l.updatedAt, deletedAt: null })),
   };
-  return { app: 'namako', formatVersion: FORMAT_VERSION, kind: 'subject', exportedAt: Date.now(), data, checksum: await sha256(JSON.stringify(data)) };
+  return { app: 'namako', formatVersion: FORMAT_VERSION, kind: 'share', exportedAt: Date.now(), data, checksum: await sha256(JSON.stringify(data)) };
 }
 
-export async function exportSubject(subject, lessons) {
+export async function exportShare(subjects, lessons) {
   const stamp = new Date().toISOString().slice(0, 10);
-  return deliver(JSON.stringify(await buildSubjectShare(subject, lessons)), `namako-${slug(subject.name)}-${stamp}`,
-    `Matière Namako : ${subject.name}`, `Matière « ${subject.name} » à ouvrir dans Namako`);
+  const name = subjects.length === 1 ? subjects[0].name : `${subjects.length} matières`;
+  return deliver(JSON.stringify(await buildShare(subjects, lessons)), `namako-${subjects.length === 1 ? slug(subjects[0].name) : 'cours'}-${stamp}`,
+    `Cours Namako : ${name}`, `Cours « ${name} » à ouvrir dans Namako`);
 }
 
 const COLOR = /^#[0-9a-fA-F]{6}$/;
 const str = (v, max) => String(v ?? '').slice(0, max);
 const num = (v, d) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : d);
 
-// Un fichier reçu n'est jamais fiable : on revérifie et on nettoie chaque champ avant de l'enregistrer.
+// Un fichier reçu n'est jamais fiable : chaque champ est revérifié et nettoyé avant d'être enregistré.
 // Les leçons déjà présentes gardent leur progression de révision.
-export async function applySubject(b) {
-  const raw = b.data.subjects[0];
-  const id = str(raw && raw.id, 80);
-  if (b.kind !== 'subject' || b.data.subjects.length !== 1 || !id) throw new Error('Cette matière partagée est invalide.');
+export async function applyShare(b) {
+  if (!isShare(b)) throw new Error('Ce fichier ne contient pas de cours partagés.');
   const now = Date.now();
-  const local = state.subjects.find((x) => x.id === id);
-  const name = local ? local.name : (str(raw.name, 60).trim() || 'Matière reçue');
-  if (!local) {
-    await io.put('subjects', { id, name, color: COLOR.test(raw.color) ? raw.color : '#0E7C86', createdAt: num(raw.createdAt, now), updatedAt: now, deletedAt: null });
-  } else if (local.deletedAt) {
-    await io.put('subjects', { ...local, deletedAt: null });
+  const names = new Map();
+  for (const raw of b.data.subjects.slice(0, 50)) {
+    const id = str(raw && raw.id, 80);
+    if (!id) continue;
+    const local = state.subjects.find((x) => x.id === id);
+    names.set(id, local ? local.name : (str(raw.name, 60).trim() || 'Matière reçue'));
+    if (!local) {
+      await io.put('subjects', { id, name: names.get(id), color: COLOR.test(raw.color) ? raw.color : '#0E7C86', createdAt: num(raw.createdAt, now), updatedAt: now, deletedAt: null });
+    } else if (local.deletedAt) {
+      await io.put('subjects', { ...local, deletedAt: null });
+    }
   }
+  if (!names.size) throw new Error('Ce fichier ne contient aucune matière valide.');
   let added = 0, updated = 0;
-  for (const r of b.data.lessons.slice(0, 500)) {
+  for (const r of b.data.lessons.slice(0, 2000)) {
     const lid = str(r && r.id, 80);
-    if (!lid || str(r.subjectId, 80) !== id) continue;
+    const sid = str(r && r.subjectId, 80);
+    if (!lid || !names.has(sid)) continue;
     const fields = {
       title: str(r.title, 120).trim() || 'Sans titre',
       content: str(r.content, 500000),
@@ -92,14 +100,14 @@ export async function applySubject(b) {
     };
     const cur = state.lessons.find((x) => x.id === lid);
     if (!cur) {
-      await io.put('lessons', { id: lid, subjectId: id, ...fields, createdAt: num(r.createdAt, now), updatedAt: num(r.updatedAt, now), deletedAt: null, mastery: 0, nextReviewAt: null });
+      await io.put('lessons', { id: lid, subjectId: sid, ...fields, createdAt: num(r.createdAt, now), updatedAt: num(r.updatedAt, now), deletedAt: null, mastery: 0, nextReviewAt: null });
       added++;
-    } else if (cur.subjectId === id && !cur.deletedAt && num(r.updatedAt, 0) > cur.updatedAt) {
+    } else if (cur.subjectId === sid && !cur.deletedAt && num(r.updatedAt, 0) > cur.updatedAt) {
       await io.put('lessons', { ...cur, ...fields, updatedAt: num(r.updatedAt, now) });
       updated++;
     }
   }
-  return { name, added, updated };
+  return { subjects: names.size, names: [...names.values()], added, updated };
 }
 
 export async function readBackup(file) {
@@ -110,7 +118,7 @@ export async function readBackup(file) {
     throw new Error('Ce fichier n’est pas une sauvegarde Namako.');
   if (b.formatVersion > FORMAT_VERSION) throw new Error('Cette sauvegarde vient d’une version plus récente de Namako. Mettez l’app à jour.');
   if ((await sha256(JSON.stringify(b.data))) !== b.checksum) throw new Error('Le fichier est abîmé ou a été modifié. Demandez-en une nouvelle copie.');
-  if (b.kind === 'subject' && b.data.subjects.length !== 1) throw new Error('Cette matière partagée est invalide.');
+  if (isShare(b) && (b.data.subjects.length < 1 || b.data.subjects.length > 50)) throw new Error('Ce fichier de cours partagés est invalide.');
   return b;
 }
 

@@ -18,6 +18,8 @@ let installEvt = null;
 let pending = null;
 let timer;
 let session = null;
+let fileIntent = 'restore';
+let shareSel = new Set();
 let blocked = false;
 const sessionIgnore = new Set();
 
@@ -45,7 +47,7 @@ function renderHome() {
   const n = DB.activeSubjects().length;
   app.innerHTML = `
     <header class="top"><div><h1>Namako</h1><p class="sub">${n ? plural(n, 'matière', 'matières') : 'Vos cours, toujours avec vous'}</p></div>
-    <span><button class="ghost" data-act="stats">Progression</button><button class="ghost" data-act="menu">Sauvegarde</button></span></header>
+    <span><button class="ghost" data-act="stats">Progression</button><button class="ghost" data-act="menu">Menu</button></span></header>
     ${banners()}${reviewCard()}
     <div class="search"><input id="q" type="search" autocomplete="off" placeholder="Chercher un titre, un tag, une matière" aria-label="Rechercher dans vos leçons" value="${esc(query)}"><div id="sugg" class="sugg"></div></div>
     <div id="list"></div>
@@ -72,7 +74,7 @@ function refreshList() {
   if (q.length < 2) {
     sugg.innerHTML = '';
     const subs = DB.activeSubjects();
-    list.innerHTML = subs.length ? subs.map(cardHtml).join('') : '<p class="empty">Aucune matière pour l’instant. Créez-en une pour y ranger vos leçons.</p>';
+    list.innerHTML = subs.length ? subs.map(cardHtml).join('') : '<div class="empty"><p>Aucune matière pour l’instant. Une matière range vos leçons, par exemple Maths ou Histoire.</p><button class="primary" data-act="new-subject">Créer ma première matière</button></div>';
     return;
   }
   const { hits, suggestions } = DB.search(q);
@@ -85,11 +87,11 @@ function renderSubject(id) {
   if (!s || s.deletedAt) return go({ name: 'home' });
   const ls = DB.activeLessons(id).sort((a, b) => b.updatedAt - a.updatedAt);
   app.innerHTML = `
-    <header class="top"><button class="ghost" data-act="back">Retour</button><button class="ghost" data-act="import-menu">Importer</button><button class="ghost" data-act="edit-subject" data-id="${id}">Modifier</button></header>
+    <header class="top"><button class="ghost" data-act="back">Retour</button><button class="ghost" data-act="edit-subject" data-id="${id}">Modifier</button></header>
     <h1 class="sh" style="--c:${s.color}">${esc(s.name)}</h1><p class="sub">${plural(ls.length, 'leçon', 'leçons')}</p>
-    <button class="ghost" style="padding:0;margin-top:4px" data-act="share-subject" data-id="${id}">Partager cette matière</button>
+    <div class="actions" style="justify-content:flex-start;margin:12px 0 0"><button data-act="import-menu">Scanner ou importer</button><button data-act="share-open" data-subject="${id}">Partager</button></div>
     ${RV.dueLessons(id).length ? `<button class="primary" style="margin-top:12px" data-act="review" data-id="${id}">Réviser cette matière (${RV.dueLessons(id).length})</button>` : ''}
-    <section style="margin-top:16px">${ls.length ? ls.map((l) => lessonHtml(l, s, false)).join('') : '<p class="empty">Aucune leçon ici. Ajoutez la première.</p>'}</section>
+    <section style="margin-top:16px">${ls.length ? ls.map((l) => lessonHtml(l, s, false)).join('') : '<div class="empty"><p>Aucune leçon ici. Ajoutez la première :</p><div class="actions col"><button class="primary" data-act="new-lesson" data-id="' + id + '">Écrire une leçon</button><button data-act="import-menu">Scanner ou importer un cours</button></div></div>'}</section>
     <button class="fab" data-act="new-lesson" data-id="${id}">Nouvelle leçon</button>`;
 }
 
@@ -100,6 +102,7 @@ function render() {
   else if (view.name === 'lesson') renderLesson(view.id);
   else if (view.name === 'review') renderReview();
   else if (view.name === 'stats') renderStats();
+  else if (view.name === 'share') renderShare();
   else { renderHome(); refreshList(); }
 }
 function go(v) { stopSpeak(); view = v; render(); scrollTo(0, 0); }
@@ -135,17 +138,33 @@ async function backupDialog() {
   const est = await navigator.storage?.estimate?.();
   const last = DB.state.meta.lastBackupAt;
   const t = DB.trashed();
-  openDlg(`<h2>Sauvegarde</h2>
-    <p>${last ? `Dernière sauvegarde : ${fmtDate(last)}.` : 'Aucune sauvegarde pour l’instant.'}</p>
-    <div class="actions col"><button class="primary" data-act="backup-now">Sauvegarder mes cours</button>
-    <button data-act="restore">Restaurer ou recevoir un fichier</button>
-    <button data-act="share-app">Partager l’application (QR Code)</button>
-    ${LIC.lic.enforced ? `<button data-act="activate">${LIC.lic.licensed ? 'Mon activation' : 'Activer Namako'}</button>` : ''}
+  openDlg(`<h2>Menu</h2>
+    <h3 class="mh">Partager avec un camarade</h3>
+    <div class="actions col"><button class="primary" data-act="share-open">Partager des cours</button>
+    <button data-act="receive">Recevoir des cours</button>
+    <button data-act="share-app">Partager l’application (QR Code)</button></div>
+    <h3 class="mh">Mes données</h3>
+    <p class="note">La copie de sécurité est pour vous seul : gardez-la en lieu sûr, par exemple dans un message à vous-même. ${last ? `Dernière copie : ${fmtDate(last)}.` : 'Aucune copie pour l’instant.'}</p>
+    <div class="actions col"><button data-act="backup-now">Faire une copie de sécurité</button>
+    <button data-act="restore">Restaurer ma copie de sécurité</button>
     <button data-act="trash">Corbeille (${t.subjects.length + t.lessons.length})</button></div>
     <p class="note">Stockage protégé : <b>${persisted ? 'oui' : 'non'}</b>.${est?.usage != null ? ` Espace utilisé : ${(est.usage / 1048576).toFixed(1)} Mo.` : ''}</p>
     ${persisted ? '' : '<button class="ghost" data-act="persist">Protéger mes données</button>'}
     <p class="note">Ne choisissez jamais « Effacer les données » pour Namako ou pour votre navigateur dans les réglages du téléphone : vos cours seraient perdus. Effacer seulement le cache est sans danger.</p>
+    <h3 class="mh">Aide</h3>
+    <div class="actions col"><button data-act="guide">Revoir le guide de démarrage</button>
+    ${LIC.lic.enforced ? `<button data-act="activate">${LIC.lic.licensed ? 'Mon activation' : 'Activer Namako'}</button>` : ''}</div>
     <div class="actions"><button class="ghost" data-act="close">Fermer</button></div>`);
+}
+
+function welcomeDialog() {
+  openDlg(`<h2>Bienvenue dans Namako</h2>
+    <p class="note">Vos cours, toujours avec vous, même sans connexion.</p>
+    <ol class="steps"><li><b>Créez une matière</b> (Maths, Histoire…).</li>
+    <li><b>Ajoutez vos leçons</b> : écrivez-les, scannez une page de cours avec l’appareil photo, ou importez un PDF.</li>
+    <li><b>Révisez chaque jour</b> : Namako vous propose les leçons à revoir. Notez-vous honnêtement.</li>
+    <li><b>Partagez ou sauvegardez</b> avec le bouton Menu : envoyez des cours à un camarade ou faites une copie de sécurité.</li></ol>
+    <div class="actions col"><button class="primary" data-act="welcome-start">Créer ma première matière</button><button class="ghost" data-act="welcome-skip">Plus tard</button></div>`);
 }
 
 function trashDialog() {
@@ -160,12 +179,13 @@ function trashDialog() {
 }
 
 function subjectReceivedDialog(b) {
-  const s = b.data.subjects[0];
-  const exists = DB.state.subjects.some((x) => x.id === s.id && !x.deletedAt);
-  openDlg(`<h2>Matière reçue</h2>
-    <p><b>${esc(String(s.name).slice(0, 60))}</b> : ${plural(b.data.lessons.length, 'leçon', 'leçons')}.</p>
-    <p class="note">${exists ? 'Vous avez déjà cette matière : les nouvelles leçons seront ajoutées et les leçons modifiées mises à jour. Votre progression de révision est conservée.' : 'Elle sera ajoutée à vos matières, à côté de vos cours actuels. Rien n’est effacé.'}</p>
-    <div class="actions col"><button class="primary" data-act="apply" data-mode="subject">Ajouter cette matière</button><button class="ghost" data-act="close">Annuler</button></div>`);
+  const count = (id) => b.data.lessons.filter((l) => l && l.subjectId === id).length;
+  const list = b.data.subjects.slice(0, 10).map((s) => `<li><b>${esc(String(s.name).slice(0, 60))}</b> : ${plural(count(s.id), 'leçon', 'leçons')}</li>`).join('');
+  const exists = b.data.subjects.some((s) => DB.state.subjects.some((x) => x.id === s.id && !x.deletedAt));
+  openDlg(`<h2>Cours reçus</h2>
+    <ul>${list}</ul>
+    <p class="note">${exists ? 'Certaines matières existent déjà chez vous : les nouvelles leçons sont ajoutées et les leçons modifiées mises à jour. Votre progression de révision est conservée.' : 'Ils seront ajoutés à côté de vos cours actuels. Rien n’est effacé.'}</p>
+    <div class="actions col"><button class="primary" data-act="apply" data-mode="share">Ajouter ces cours</button><button class="ghost" data-act="close">Annuler</button></div>`);
 }
 
 function importDialog(b) {
@@ -180,16 +200,73 @@ function importDialog(b) {
 
 /* ---------- Partage : matière et application ---------- */
 
-async function shareSubject(id) {
-  const s = find('subjects', id);
-  const lessons = DB.activeLessons(id);
-  if (!s || !lessons.length) return message('Rien à partager', 'Cette matière ne contient aucune leçon pour l’instant.');
-  const r = await BK.exportSubject(s, lessons);
+// Écran unique de partage : on coche des matières entières ou seulement certaines leçons
+function openShare(subjectId, lessonId) {
+  shareSel = new Set();
+  if (lessonId) shareSel.add(lessonId);
+  if (subjectId) DB.activeLessons(subjectId).forEach((l) => shareSel.add(l.id));
+  closeDlg();
+  go({ name: 'share', from: view });
+}
+
+function renderShare() {
+  const subs = DB.activeSubjects().filter((s) => DB.activeLessons(s.id).length);
+  if (!subs.length) {
+    app.innerHTML = `<header class="top"><button class="ghost" data-act="back">Retour</button></header>
+      <h1>Partager</h1><p class="empty">Vous n’avez pas encore de leçon à partager.</p>`;
+    return;
+  }
+  app.innerHTML = `
+    <header class="top"><button class="ghost" data-act="back">Retour</button></header>
+    <h1>Partager</h1>
+    <p class="sub">Cochez ce que vous voulez envoyer à un camarade : une matière entière ou seulement certaines leçons. Votre progression de révision n’est pas envoyée.</p>
+    <label class="chk" style="margin-top:16px"><input type="checkbox" id="sh-all"><b>Tout sélectionner</b></label>
+    ${subs.map((s) => {
+      const ls = DB.activeLessons(s.id);
+      return `<div class="shgroup"><label class="chk"><input type="checkbox" data-sh-subj="${s.id}"><i class="dot" style="background:${s.color}"></i><b>${esc(s.name)}</b><small class="note">${plural(ls.length, 'leçon', 'leçons')}</small></label>
+        ${ls.map((l) => `<label class="chk sub2"><input type="checkbox" data-sh-les="${l.id}" data-subj="${s.id}">${esc(l.title)}</label>`).join('')}</div>`;
+    }).join('')}
+    <div class="readbar"><button class="primary" id="sh-send" data-act="do-share">Envoyer</button></div>`;
+  syncShare();
+}
+
+function syncShare() {
+  const boxes = [...app.querySelectorAll('[data-sh-les]')];
+  boxes.forEach((c) => { c.checked = shareSel.has(c.dataset.shLes); });
+  app.querySelectorAll('[data-sh-subj]').forEach((c) => {
+    const mine = boxes.filter((x) => x.dataset.subj === c.dataset.shSubj);
+    const n = mine.filter((x) => x.checked).length;
+    c.checked = n > 0 && n === mine.length;
+    c.indeterminate = n > 0 && n < mine.length;
+  });
+  const sel = boxes.filter((x) => x.checked).length;
+  const all = app.querySelector('#sh-all');
+  if (all) { all.checked = sel > 0 && sel === boxes.length; all.indeterminate = sel > 0 && sel < boxes.length; }
+  const btn = app.querySelector('#sh-send');
+  if (btn) { btn.disabled = !sel; btn.textContent = sel ? `Envoyer (${plural(sel, 'leçon', 'leçons')})` : 'Cochez au moins une leçon'; }
+}
+
+app.addEventListener('change', (e) => {
+  if (view.name !== 'share') return;
+  const t = e.target;
+  const set = (ids, on) => ids.forEach((id) => (on ? shareSel.add(id) : shareSel.delete(id)));
+  const boxes = [...app.querySelectorAll('[data-sh-les]')];
+  if (t.id === 'sh-all') set(boxes.map((c) => c.dataset.shLes), t.checked);
+  else if (t.dataset.shSubj) set(boxes.filter((c) => c.dataset.subj === t.dataset.shSubj).map((c) => c.dataset.shLes), t.checked);
+  else if (t.dataset.shLes) set([t.dataset.shLes], t.checked);
+  syncShare();
+});
+
+async function doShare() {
+  const lessons = DB.activeLessons().filter((l) => shareSel.has(l.id));
+  if (!lessons.length) return;
+  const subjects = DB.activeSubjects().filter((s) => lessons.some((l) => l.subjectId === s.id));
+  const r = await BK.exportShare(subjects, lessons);
   if (!r) return;
-  message(r === 'shared' ? 'Matière prête' : 'Fichier enregistré',
+  message(r === 'shared' ? 'Cours prêts' : 'Fichier enregistré',
     r === 'shared'
-      ? 'Votre camarade doit ouvrir Namako, puis Sauvegarde, puis « Restaurer ou recevoir un fichier », et choisir le fichier reçu. Votre progression de révision n’est pas partagée.'
-      : 'Le partage n’est pas disponible ici. Le fichier est dans vos Téléchargements : envoyez-le par WhatsApp. Votre camarade l’ouvre dans Namako, menu Sauvegarde, « Restaurer ou recevoir un fichier ».');
+      ? 'Votre camarade ouvre Namako, touche Menu, puis « Recevoir des cours », et choisit le fichier reçu.'
+      : 'Le partage n’est pas disponible ici. Le fichier est dans vos Téléchargements : envoyez-le par WhatsApp. Votre camarade l’ouvre dans Namako : Menu, puis « Recevoir des cours ».');
 }
 
 const appLink = () => new URL('./', location.href).href;
@@ -467,7 +544,7 @@ function renderLesson(id) {
   if (!l || l.deletedAt || !s || s.deletedAt) return go({ name: 'home' });
   const fs = DB.state.meta.fontSize || 18;
   app.innerHTML = `
-    <header class="top"><button class="ghost" data-act="back">Retour</button><button class="ghost" data-act="edit-lesson" data-id="${id}">Modifier</button></header>
+    <header class="top"><button class="ghost" data-act="back">Retour</button><span><button class="ghost" data-act="share-open" data-lesson="${id}">Partager</button><button class="ghost" data-act="edit-lesson" data-id="${id}">Modifier</button></span></header>
     <h1 class="sh" style="--c:${s.color}">${esc(l.title)}</h1>
     <p class="sub">${esc(s.name)}${(l.tags || []).length ? ' – ' + esc(l.tags.join(', ')) : ''}</p>
     <article class="read" style="font-size:${fs}px">${md(l.content) || '<p class="empty">Cette leçon est vide. Touchez Modifier pour écrire.</p>'}</article>
@@ -537,7 +614,7 @@ async function onClick(e) {
   switch (act) {
     case 'open-subject': return go({ name: 'subject', id });
     case 'back':
-      if (view.name === 'lesson') return go(view.from || { name: 'home' });
+      if (view.name === 'lesson' || view.name === 'share') return go(view.from || { name: 'home' });
       query = ''; picked = ''; return go({ name: 'home' });
     case 'new-subject': return subjectDialog();
     case 'edit-subject': return subjectDialog(find('subjects', id));
@@ -578,7 +655,6 @@ async function onClick(e) {
     case 'import-cam': closeDlg(); return camInput.click();
     case 'import-gal': closeDlg(); return galInput.click();
     case 'cancel-scan': SC.cancel(); return closeDlg();
-    case 'share-subject': return shareSubject(id);
     case 'share-app': return qrDialog();
     case 'share-link': return shareLink();
     case 'font-': case 'font+': {
@@ -604,19 +680,25 @@ async function onClick(e) {
         r === 'shared' ? 'Vérifiez que le fichier est bien arrivé à destination (par exemple dans la conversation WhatsApp choisie).'
                        : 'Le partage n’est pas disponible ici. Le fichier est dans vos Téléchargements : joignez-le à un message WhatsApp ou copiez-le ailleurs.');
     }
-    case 'restore': return document.querySelector('#file').click();
+    case 'restore': fileIntent = 'restore'; return document.querySelector('#file').click();
+    case 'receive': fileIntent = 'receive'; return document.querySelector('#file').click();
+    case 'share-open': return openShare(el.dataset.subject, el.dataset.lesson);
+    case 'do-share': return doShare();
+    case 'guide': return welcomeDialog();
+    case 'welcome-start': await DB.setMeta('welcomeDone', true); return subjectDialog();
+    case 'welcome-skip': await DB.setMeta('welcomeDone', true); return closeDlg();
     case 'persist': await navigator.storage.persist(); return backupDialog();
     case 'trash': return trashDialog();
     case 'restore-item': await DB.put(store, { ...find(store, id), deletedAt: null }); trashDialog(); return render();
     case 'delete-item': if (confirm('Supprimer définitivement ? Cette action est irréversible.')) { await DB.removeForever(store, id); trashDialog(); render(); } return;
     case 'install': installEvt.prompt(); await installEvt.userChoice; installEvt = null; return render();
     case 'apply': {
-      if (mode === 'subject') {
+      if (mode === 'share') {
         try {
-          const r = await BK.applySubject(pending);
+          const r = await BK.applyShare(pending);
           pending = null;
           render();
-          return message('Matière ajoutée', `« ${r.name} » : ${plural(r.added, 'leçon ajoutée', 'leçons ajoutées')}, ${plural(r.updated, 'leçon mise à jour', 'leçons mises à jour')}.`);
+          return message('Cours ajoutés', `${plural(r.subjects, 'matière', 'matières')} : ${plural(r.added, 'leçon ajoutée', 'leçons ajoutées')}, ${plural(r.updated, 'leçon mise à jour', 'leçons mises à jour')}.`);
         } catch (err) { return message('Ajout impossible', err.message); }
       }
       if (mode === 'replace' && !confirm('Vos cours actuels seront effacés et remplacés. Continuer ?')) return;
@@ -676,7 +758,14 @@ document.querySelector('#file').addEventListener('change', async (e) => {
   const f = e.target.files[0];
   e.target.value = '';
   if (!f) return;
-  try { pending = await BK.readBackup(f); importDialog(pending); }
+  try {
+    pending = await BK.readBackup(f);
+    if (fileIntent === 'receive' && !BK.isShare(pending)) {
+      pending = null;
+      return message('Ce n’est pas un cours partagé', 'Ce fichier est une copie de sécurité complète. Pour la restaurer, ouvrez le Menu puis « Restaurer ma copie de sécurité ».');
+    }
+    importDialog(pending);
+  }
   catch (err) { message('Restauration impossible', err.message); }
 });
 
@@ -730,5 +819,6 @@ if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catc
   catch { app.innerHTML = '<p class="empty">Le stockage du navigateur est indisponible (navigation privée ?). Ouvrez Namako dans une fenêtre normale.</p>'; return; }
   await LIC.init();
   render();
+  if (!LIC.lic.locked && !DB.state.meta.welcomeDone && !DB.activeSubjects().length) welcomeDialog();
   checkVersion();
 })();
