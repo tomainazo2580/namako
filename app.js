@@ -9,7 +9,30 @@ import { qrSvg } from './qr.js';
 
 const app = document.querySelector('#app');
 const dlg = document.querySelector('#dlg');
-const COLORS = ['#0E7C86', '#E4572E', '#E9A23B', '#5E8C31', '#7B5EA7', '#C2456B', '#2F6DB5', '#8A5A3C'];
+const tabs = document.createElement('nav');
+tabs.id = 'tabs';
+tabs.setAttribute('aria-label', 'Navigation principale');
+document.body.append(tabs);
+const COLORS = ['#2B5CD6', '#0E9F8E', '#E5484D', '#F08A24', '#8E4EC6', '#D6409F', '#3E9B4F', '#8B5E3C'];
+
+// Texte lisible (clair ou foncé) sur une couleur de matière
+const onColor = (hex) => {
+  if (!/^#[0-9a-f]{6}$/i.test(hex)) return '#FFFFFF';
+  const n = parseInt(hex.slice(1), 16);
+  const [r, g, b] = [n >> 16, (n >> 8) & 255, n & 255].map((v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.21 ? '#14203F' : '#FFFFFF';
+};
+
+const plain = (t) => String(t).replace(/[#*_]+/g, '').replace(/\s*\n\s*/g, ' ').trim();
+const LOGO = '<svg class="logo" viewBox="0 0 48 48" aria-hidden="true"><rect width="48" height="48" rx="11" fill="#1D3FA6"/><path d="M14 12v24M34 12v24M14 12l20 24" stroke="#fff" stroke-width="4.6" fill="none"/><path d="M12 41.5l24-1.6" stroke="#FFE45E" stroke-width="3.4" stroke-linecap="round"/></svg>';
+const CHEV = '<svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>';
+const EMPTY_ART = '<svg class="art" viewBox="0 0 120 90" aria-hidden="true"><rect class="pg" x="14" y="8" width="92" height="74" rx="6"/><path class="mg" d="M34 8v74"/><path class="ln" d="M44 26h52M44 40h52M44 54h36M44 68h44"/><path class="mk" d="M44 37h30"/></svg>';
+const TAB_ICONS = {
+  home: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11.5 12 4l9 7.5"/><path d="M5 10v9a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1v-9"/></svg>',
+  review: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 4v5h-5"/></svg>',
+  stats: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20V10M12 20V4M19 20v-7"/></svg>',
+  menu: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>',
+};
 
 let view = { name: 'home' };
 let query = '';
@@ -46,25 +69,24 @@ function banners() {
 function renderHome() {
   const n = DB.activeSubjects().length;
   app.innerHTML = `
-    <header class="top"><div><h1>Namako</h1><p class="sub">${n ? plural(n, 'matière', 'matières') : 'Vos cours, toujours avec vous'}</p></div>
-    <span><button class="ghost" data-act="stats">Progression</button><button class="ghost" data-act="menu">Menu</button></span></header>
+    <header class="brand">${LOGO}<div><h1>Namako</h1><p class="sub">${n ? 'Vos cours, toujours avec vous' : 'Votre cahier de cours, toujours avec vous'}</p></div></header>
     ${banners()}${reviewCard()}
-    <div class="search"><input id="q" type="search" autocomplete="off" placeholder="Chercher un titre, un tag, une matière" aria-label="Rechercher dans vos leçons" value="${esc(query)}"><div id="sugg" class="sugg"></div></div>
+    <div class="search"><input id="q" type="search" autocomplete="off" placeholder="Chercher dans mes cours" aria-label="Rechercher dans vos leçons" value="${esc(query)}"><div id="sugg" class="sugg"></div></div>
     <div id="list"></div>
-    <button class="fab" data-act="new-subject">Nouvelle matière</button>`;
+    ${n ? '<button class="fab" data-act="new-subject">Nouvelle matière</button>' : ''}`;
 }
 
 const cardHtml = (s) => {
   const ls = DB.activeLessons(s.id);
   const due = ls.filter((l) => RV.isDue(l)).length;
-  return `<button class="card" data-act="open-subject" data-id="${s.id}"><i style="background:${s.color}"></i>
+  const initial = ([...s.name.trim()][0] || '?').toUpperCase();
+  return `<button class="card" data-act="open-subject" data-id="${s.id}"><i class="tile" style="background:${s.color};color:${onColor(s.color)}">${esc(initial)}</i>
     <span class="cb"><b>${esc(s.name)}</b><small>${plural(ls.length, 'leçon', 'leçons')}</small></span>
-    ${due ? `<em style="box-shadow:inset 0 0 0 2px ${s.color}">${due} à revoir</em>` : ''}</button>`;
+    ${due ? `<em>${due} à revoir</em>` : ''}${CHEV}</button>`;
 };
-
 const lessonHtml = (l, s, showSubject) => `<button class="hit" data-act="open-lesson" data-id="${l.id}"><i style="background:${s.color}"></i>
   <span class="cb"><b>${esc(l.title)}</b>${showSubject ? `<small>${esc(s.name)}</small>` : ''}${(l.tags || []).length ? `<small>${esc(l.tags.join(', '))}</small>` : ''}
-  <span class="ex">${esc(l.content.slice(0, 110))}</span></span></button>`;
+  <span class="ex">${esc(plain(l.content).slice(0, 110))}</span></span></button>`;
 
 function refreshList() {
   const list = document.querySelector('#list');
@@ -74,7 +96,7 @@ function refreshList() {
   if (q.length < 2) {
     sugg.innerHTML = '';
     const subs = DB.activeSubjects();
-    list.innerHTML = subs.length ? subs.map(cardHtml).join('') : '<div class="empty"><p>Aucune matière pour l’instant. Une matière range vos leçons, par exemple Maths ou Histoire.</p><button class="primary" data-act="new-subject">Créer ma première matière</button></div>';
+    list.innerHTML = subs.length ? subs.map(cardHtml).join('') : '<div class="empty">' + EMPTY_ART + '<p>Aucune matière pour l’instant. Une matière range vos leçons, par exemple Maths ou Histoire.</p><button class="primary" data-act="new-subject">Créer ma première matière</button></div>';
     return;
   }
   const { hits, suggestions } = DB.search(q);
@@ -91,7 +113,7 @@ function renderSubject(id) {
     <h1 class="sh" style="--c:${s.color}">${esc(s.name)}</h1><p class="sub">${plural(ls.length, 'leçon', 'leçons')}</p>
     <div class="actions" style="justify-content:flex-start;margin:12px 0 0"><button data-act="import-menu">Scanner ou importer</button><button data-act="share-open" data-subject="${id}">Partager</button></div>
     ${RV.dueLessons(id).length ? `<button class="primary" style="margin-top:12px" data-act="review" data-id="${id}">Réviser cette matière (${RV.dueLessons(id).length})</button>` : ''}
-    <section style="margin-top:16px">${ls.length ? ls.map((l) => lessonHtml(l, s, false)).join('') : '<div class="empty"><p>Aucune leçon ici. Ajoutez la première :</p><div class="actions col"><button class="primary" data-act="new-lesson" data-id="' + id + '">Écrire une leçon</button><button data-act="import-menu">Scanner ou importer un cours</button></div></div>'}</section>
+    <section class="sheet" style="margin-top:16px">${ls.length ? ls.map((l) => lessonHtml(l, s, false)).join('') : '<div class="empty">' + EMPTY_ART + '<p>Aucune leçon ici. Ajoutez la première :</p><div class="actions col"><button class="primary" data-act="new-lesson" data-id="' + id + '">Écrire une leçon</button><button data-act="import-menu">Scanner ou importer un cours</button></div></div>'}</section>
     <button class="fab" data-act="new-lesson" data-id="${id}">Nouvelle leçon</button>`;
 }
 
@@ -104,12 +126,23 @@ function render() {
   else if (view.name === 'stats') renderStats();
   else if (view.name === 'share') renderShare();
   else { renderHome(); refreshList(); }
+  renderTabs();
+}
+
+function renderTabs() {
+  const show = !blocked && !LIC.lic.locked && ['home', 'subject', 'stats'].includes(view.name);
+  tabs.hidden = !show;
+  document.body.classList.toggle('has-tabs', show);
+  if (!show) return;
+  const active = view.name === 'stats' ? 'stats' : 'home';
+  tabs.innerHTML = [['home', 'Accueil'], ['review', 'Réviser'], ['stats', 'Progrès'], ['menu', 'Menu']]
+    .map(([k, label]) => `<button data-act="tab-${k}" class="${k === active ? 'on' : ''}"${k === active ? ' aria-current="page"' : ''}>${TAB_ICONS[k]}<span>${label}</span></button>`).join('');
 }
 function go(v) { stopSpeak(); view = v; render(); scrollTo(0, 0); }
 
 /* ---------- Fenêtres ---------- */
 
-const openDlg = (html) => { dlg.innerHTML = html; if (!dlg.open) dlg.showModal(); };
+const openDlg = (html) => { dlg.innerHTML = html; if (!dlg.open) dlg.showModal(); dlg.scrollTop = 0; };
 const closeDlg = () => { if (dlg.open) dlg.close(); };
 const message = (title, text) => openDlg(`<h2>${esc(title)}</h2><p>${esc(text)}</p><div class="actions"><button class="primary" data-act="close">Fermer</button></div>`);
 
@@ -148,9 +181,10 @@ async function backupDialog() {
     <div class="actions col"><button data-act="backup-now">Faire une copie de sécurité</button>
     <button data-act="restore">Restaurer ma copie de sécurité</button>
     <button data-act="trash">Corbeille (${t.subjects.length + t.lessons.length})</button></div>
+    <details class="prot"><summary>Protection de mes données</summary>
     <p class="note">Stockage protégé : <b>${persisted ? 'oui' : 'non'}</b>.${est?.usage != null ? ` Espace utilisé : ${(est.usage / 1048576).toFixed(1)} Mo.` : ''}</p>
     ${persisted ? '' : '<button class="ghost" data-act="persist">Protéger mes données</button>'}
-    <p class="note">Ne choisissez jamais « Effacer les données » pour Namako ou pour votre navigateur dans les réglages du téléphone : vos cours seraient perdus. Effacer seulement le cache est sans danger.</p>
+    <p class="note">Ne choisissez jamais « Effacer les données » pour Namako ou pour votre navigateur dans les réglages du téléphone : vos cours seraient perdus. Effacer seulement le cache est sans danger.</p></details>
     <h3 class="mh">Aide</h3>
     <div class="actions col"><button data-act="guide">Revoir le guide de démarrage</button>
     ${LIC.lic.enforced ? `<button data-act="activate">${LIC.lic.licensed ? 'Mon activation' : 'Activer Namako'}</button>` : ''}</div>
@@ -189,7 +223,7 @@ function subjectReceivedDialog(b) {
 }
 
 function importDialog(b) {
-  if (b.kind === 'subject') return subjectReceivedDialog(b);
+  if (BK.isShare(b)) return subjectReceivedDialog(b);
   openDlg(`<h2>Restaurer une sauvegarde</h2>
     <p>Sauvegarde du ${fmtDate(b.exportedAt)} : ${plural(b.data.subjects.length, 'matière', 'matières')} et ${plural(b.data.lessons.length, 'leçon', 'leçons')}.</p>
     <p class="note">Fusionner garde vos cours actuels et ajoute ceux de la sauvegarde, sans doublons. Remplacer efface d’abord vos cours actuels.</p>
@@ -513,7 +547,7 @@ function renderStats() {
     <div class="chart" role="img" aria-label="Révisions par jour : ${week.map((d) => d.label + ' ' + d.count).join(', ')}">
       ${week.map((d) => `<div><span>${d.count}</span><i style="height:${Math.round((d.count / max) * 80) + 3}px"></i><small>${d.label}</small></div>`).join('')}</div>
     <h2 style="margin-top:24px">Vos leçons</h2>
-    <div class="stack"><span style="flex:${b.mastered};background:var(--accent)"></span><span style="flex:${b.learning};background:#E9A23B"></span></div>
+    <div class="stack"><span style="flex:${b.mastered};background:var(--accent)"></span><span style="flex:${b.learning};background:var(--marker)"></span></div>
     <p class="note">${plural(b.mastered, 'maîtrisée', 'maîtrisées')}, ${plural(b.learning, 'à consolider', 'à consolider')}, ${plural(b.fresh, 'nouvelle', 'nouvelles')}.</p>
     <h2 style="margin-top:24px">Badges</h2>
     <div class="badges">${RV.badges().map((x) => `<div class="badge ${x.ok ? 'on' : ''}"><b>${esc(x.name)}</b><small>${x.ok ? 'Obtenu' : esc(x.desc)}</small></div>`).join('')}</div>`;
@@ -624,11 +658,13 @@ async function onClick(e) {
     case 'trash-lesson': await DB.put('lessons', { ...find('lessons', id), deletedAt: Date.now() }); closeDlg(); return view.name === 'lesson' ? go(view.from || { name: 'home' }) : render();
     case 'pick': picked = label; query = label; document.querySelector('#q').value = label; return refreshList();
     case 'menu': return backupDialog();
-    case 'stats': return go({ name: 'stats' });
+    case 'stats': case 'tab-stats': return go({ name: 'stats' });
+    case 'tab-home': query = ''; picked = ''; return go({ name: 'home' });
+    case 'tab-menu': return backupDialog();
     case 'activate': closeDlg(); return go({ name: 'activate' });
     case 'copy': return copyText(el);
     case 'do-update': return doUpdate(el);
-    case 'review': {
+    case 'review': case 'tab-review': {
       const ids = RV.dueLessons(id || null, Date.now(), 20).map((l) => l.id);
       if (!ids.length) return message('Rien à revoir', 'Toutes vos leçons sont à jour. Revenez demain !');
       session = { ids, i: 0, revealed: false, counts: [0, 0, 0], requeued: new Set() };
@@ -740,6 +776,7 @@ app.addEventListener('submit', async (e) => {
   else document.querySelector('#actmsg').textContent = 'Ce code ne correspond pas à cet identifiant. Vérifiez qu’il est complet, sans lettre manquante.';
 });
 app.addEventListener('click', onClick);
+tabs.addEventListener('click', onClick);
 dlg.addEventListener('pointerdown', (e) => { if (e.target.closest('[data-ins]')) e.preventDefault(); });
 dlg.addEventListener('click', (e) => {
   const b = e.target.closest('[data-ins]');
