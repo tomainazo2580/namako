@@ -135,3 +135,69 @@ export async function applyBackup(b, mode) {
   }
   return { added, updated };
 }
+
+/* ---- Partage par lien : les cours voyagent dans l'adresse, un simple appui les ouvre dans Namako ---- */
+export const canLink = typeof CompressionStream !== 'undefined' && typeof DecompressionStream !== 'undefined';
+const MAX_UNZIPPED = 8e6;
+
+const b64u = (u8) => btoa(String.fromCharCode(...u8)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const unb64u = (s) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0));
+
+async function squeeze(bytes) {
+  return new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(new CompressionStream('deflate-raw'))).arrayBuffer());
+}
+async function unsqueeze(bytes) {
+  const reader = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw')).getReader();
+  const parts = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.length;
+    if (total > MAX_UNZIPPED) { await reader.cancel(); throw new Error('trop volumineux'); }   // protège contre un lien piégé
+    parts.push(value);
+  }
+  return new Blob(parts).arrayBuffer().then((buf) => new Uint8Array(buf));
+}
+
+export async function shareToText(share) {
+  return b64u(await squeeze(new TextEncoder().encode(JSON.stringify({ k: 's', d: share.data }))));
+}
+
+export async function shareFromText(text) {
+  let o;
+  try { o = JSON.parse(new TextDecoder().decode(await unsqueeze(unb64u(text)))); }
+  catch { throw new Error('Ce lien est incomplet ou abîmé. Demandez-en un nouveau.'); }
+  if (!o || o.k !== 's' || !o.d || !Array.isArray(o.d.subjects) || !Array.isArray(o.d.lessons) || o.d.subjects.length < 1 || o.d.subjects.length > 50)
+    throw new Error('Ce lien ne contient pas de cours Namako.');
+  return { app: 'namako', formatVersion: FORMAT_VERSION, kind: 'share', exportedAt: Date.now(), data: o.d };
+}
+
+/* ---- Sauvegardes automatiques : 3 copies récentes gardées sur le téléphone (protègent contre les erreurs) ---- */
+const SNAP_SLOTS = [1, 2, 3];
+const fingerprint = () => {
+  const items = [...state.subjects, ...state.lessons];
+  return `${items.length}:${items.reduce((m, x) => Math.max(m, x.updatedAt || 0), 0)}:${state.reviews.length}`;
+};
+
+export async function autoSnapshot() {
+  const hasData = state.reviews.length > 0 || state.lessons.some((l) => !l.deletedAt && l.source !== 'pack');
+  if (!hasData) return false;
+  const fp = fingerprint();
+  if (state.meta.snapFp === fp || Date.now() - (state.meta.snapAt || 0) < 20 * 36e5) return false;
+  const backup = await buildBackup();
+  const json = JSON.stringify(backup);
+  if (json.length > 8e6) return false;
+  for (let i = SNAP_SLOTS.length; i >= 2; i--) {
+    const prev = state.meta['snap' + (i - 1)];
+    if (prev) await setMeta('snap' + i, prev);
+  }
+  await setMeta('snap1', { at: Date.now(), json, subjects: backup.data.subjects.length, lessons: backup.data.lessons.length });
+  await setMeta('snapAt', Date.now());
+  await setMeta('snapFp', fp);
+  return true;
+}
+
+export const getSnapshots = () =>
+  SNAP_SLOTS.map((slot) => ({ slot, v: state.meta['snap' + slot] })).filter((x) => x.v).map(({ slot, v }) => ({ slot, at: v.at, subjects: v.subjects, lessons: v.lessons }));
+export const readSnapshot = (slot) => JSON.parse(state.meta['snap' + slot].json);

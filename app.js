@@ -49,6 +49,7 @@ const sessionIgnore = new Set();
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const days = (ts) => Math.floor((Date.now() - ts) / 864e5);
 const fmtDate = (ts) => new Date(ts).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
+const fmtDateTime = (ts) => new Date(ts).toLocaleString('fr-FR', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
 const plural = (n, one, many) => `${n} ${n > 1 ? many : one}`;
 const find = (store, id) => DB.state[store].find((x) => x.id === id);
 
@@ -171,6 +172,7 @@ async function backupDialog() {
   const est = await navigator.storage?.estimate?.();
   const last = DB.state.meta.lastBackupAt;
   const t = DB.trashed();
+  const snaps = BK.getSnapshots();
   openDlg(`<h2>Menu</h2>
     <h3 class="mh">Cours prêts à l’emploi</h3>
     <div class="actions col"><button data-act="library">Cours de 3ème</button></div>
@@ -179,9 +181,10 @@ async function backupDialog() {
     <button data-act="receive">Recevoir des cours</button>
     <button data-act="share-app">Partager l’application (QR Code)</button></div>
     <h3 class="mh">Mes données</h3>
-    <p class="note">La copie de sécurité est pour vous seul : gardez-la en lieu sûr, par exemple dans un message à vous-même. ${last ? `Dernière copie : ${fmtDate(last)}.` : 'Aucune copie pour l’instant.'}</p>
+    <p class="note">Namako fait seul des copies sur ce téléphone, mais seule la copie de sécurité protège si le téléphone est perdu ou vidé : envoyez-la à vous-même (WhatsApp, Drive, e-mail). ${last ? `Dernière copie : ${fmtDate(last)}.` : 'Aucune copie pour l’instant.'}</p>
     <div class="actions col"><button data-act="backup-now">Faire une copie de sécurité</button>
     <button data-act="restore">Restaurer ma copie de sécurité</button>
+    <button data-act="snapshots">Sauvegardes automatiques (${snaps.length})</button>
     <button data-act="trash">Corbeille (${t.subjects.length + t.lessons.length})</button></div>
     <details class="prot"><summary>Protection de mes données</summary>
     <p class="note">Stockage protégé : <b>${persisted ? 'oui' : 'non'}</b>.${est?.usage != null ? ` Espace utilisé : ${(est.usage / 1048576).toFixed(1)} Mo.` : ''}</p>
@@ -232,6 +235,40 @@ function importDialog(b) {
     <div class="actions col"><button class="primary" data-act="apply" data-mode="merge">Fusionner avec mes cours</button>
     <button class="danger" data-act="apply" data-mode="replace">Remplacer mes cours</button>
     <button class="ghost" data-act="close">Annuler</button></div>`);
+}
+
+/* ---------- Réception : lien ou fichier envoyé vers Namako ---------- */
+
+async function takeIncoming() {
+  if (LIC.lic.locked) return null;
+  try {
+    if (location.hash.startsWith('#recu=')) {
+      const text = location.hash.slice(6);
+      history.replaceState(null, '', location.pathname);
+      return await BK.shareFromText(text);
+    }
+    if (location.search.includes('recu=1')) {
+      history.replaceState(null, '', location.pathname);
+      const cache = await caches.open('namako-inbox');
+      const r = await cache.match('received-file');
+      if (r) { await cache.delete('received-file'); return await BK.readBackup(new File([await r.blob()], 'cours.txt')); }
+    }
+  } catch (e) { return { error: e.message || 'Ce lien ou ce fichier n’est pas valide.' }; }
+  return null;
+}
+
+function openIncoming(x) {
+  if (x.error) return message('Cours non reconnus', x.error);
+  pending = x;
+  importDialog(pending);
+}
+
+function snapshotsDialog() {
+  const snaps = BK.getSnapshots();
+  openDlg(`<h2>Sauvegardes automatiques</h2>
+    <p class="note">Namako garde seul jusqu’à 3 copies récentes sur ce téléphone. Elles protègent contre une erreur (suppression, mauvais import), mais pas contre l’effacement des données du navigateur : faites aussi une copie de sécurité hors du téléphone.</p>
+    ${snaps.length ? snaps.map((s) => `<div class="item"><span>${esc(fmtDateTime(s.at))}<br><small class="note">${plural(s.subjects, 'matière', 'matières')}, ${plural(s.lessons, 'leçon', 'leçons')}</small></span><button data-act="snap-restore" data-slot="${s.slot}">Restaurer</button></div>`).join('') : '<p class="empty">Aucune sauvegarde automatique pour l’instant.</p>'}
+    <div class="actions"><button class="ghost" data-act="menu">Retour</button></div>`);
 }
 
 /* ---------- Cours prêts à l'emploi (3ème) ---------- */
@@ -334,16 +371,42 @@ app.addEventListener('change', (e) => {
   syncShare();
 });
 
+const LINK_MAX = 10000;
+
 async function doShare() {
   const lessons = DB.activeLessons().filter((l) => shareSel.has(l.id));
   if (!lessons.length) return;
   const subjects = DB.activeSubjects().filter((s) => lessons.some((l) => l.subjectId === s.id));
+  const name = subjects.length === 1 ? subjects[0].name : plural(subjects.length, 'matière', 'matières');
+  if (BK.canLink) {
+    try {
+      const url = appLink() + '#recu=' + (await BK.shareToText(await BK.buildShare(subjects, lessons)));
+      if (url.length <= LINK_MAX && (await sendLink(url, name, lessons.length))) return;
+    } catch { /* on passe au fichier */ }
+  }
   const r = await BK.exportShare(subjects, lessons);
   if (!r) return;
   message(r === 'shared' ? 'Cours prêts' : 'Fichier enregistré',
     r === 'shared'
-      ? 'Votre camarade ouvre Namako, touche Menu, puis « Recevoir des cours », et choisit le fichier reçu.'
+      ? 'C’est un gros envoi, il part donc dans un fichier. Votre camarade ouvre Namako, touche Menu, puis « Recevoir des cours », et choisit le fichier. Il peut aussi partager le fichier directement vers Namako.'
       : 'Le partage n’est pas disponible ici. Le fichier est dans vos Téléchargements : envoyez-le par WhatsApp. Votre camarade l’ouvre dans Namako : Menu, puis « Recevoir des cours ».');
+}
+
+// Le lien contient les cours : un appui suffit pour les recevoir, même si l'application n'est pas encore installée
+async function sendLink(url, name, count) {
+  const text = `Cours Namako : ${name} (${plural(count, 'leçon', 'leçons')}). Touche ce lien pour les ajouter à ton application :`;
+  if (navigator.share) {
+    try {
+      await navigator.share({ title: 'Cours Namako', text, url });
+      message('Cours prêts', 'Votre camarade n’a qu’à toucher le lien : Namako s’ouvre et lui propose d’ajouter les cours.');
+      return true;
+    } catch (e) { if (e.name === 'AbortError') return true; }
+  }
+  try {
+    await navigator.clipboard.writeText(`${text}\n${url}`);
+    message('Lien copié', 'Collez-le dans un message WhatsApp ou un SMS : il contient vos cours.');
+    return true;
+  } catch { return false; }   // ni partage ni copie : on envoie un fichier à la place
 }
 
 const appLink = () => new URL('./', location.href).href;
@@ -764,6 +827,8 @@ async function onClick(e) {
     case 'share-open': return openShare(el.dataset.subject, el.dataset.lesson);
     case 'do-share': return doShare();
     case 'guide': return welcomeDialog();
+    case 'snapshots': return snapshotsDialog();
+    case 'snap-restore': pending = BK.readSnapshot(el.dataset.slot); return importDialog(pending);
     case 'library': if (!DB.state.meta.welcomeDone) await DB.setMeta('welcomeDone', true); return libraryDialog();
     case 'pack-add': return addPacks(el.dataset.pack);
     case 'welcome-start': await DB.setMeta('welcomeDone', true); return subjectDialog();
@@ -892,6 +957,7 @@ document.addEventListener('visibilitychange', async () => {
   const was = LIC.lic.locked;
   await LIC.touch();
   if (LIC.lic.locked !== was) render();
+  BK.autoSnapshot().catch(() => {});
 });
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
@@ -901,6 +967,9 @@ if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catc
   catch { app.innerHTML = '<p class="empty">Le stockage du navigateur est indisponible (navigation privée ?). Ouvrez Namako dans une fenêtre normale.</p>'; return; }
   await LIC.init();
   render();
-  if (!LIC.lic.locked && !DB.state.meta.welcomeDone && !DB.activeSubjects().length) welcomeDialog();
+  const incoming = await takeIncoming();
+  if (incoming) openIncoming(incoming);
+  else if (!LIC.lic.locked && !DB.state.meta.welcomeDone && !DB.activeSubjects().length) welcomeDialog();
+  BK.autoSnapshot().catch(() => {});
   checkVersion();
 })();
