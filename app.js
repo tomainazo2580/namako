@@ -58,7 +58,7 @@ function banners() {
   const out = [];
   if (LIC.lic.enforced && !LIC.lic.licensed) out.push(`<div class="banner"><span>Essai gratuit : ${plural(LIC.lic.daysLeft, 'jour restant', 'jours restants')}.</span><button data-act="activate">Activer</button></div>`);
   const last = DB.state.meta.lastBackupAt;
-  if (DB.activeLessons().length > 0 && (!last || days(last) >= 7)) {
+  if (DB.activeLessons().some((l) => l.source !== 'pack') && (!last || days(last) >= 7)) {
     const msg = last ? `Dernière sauvegarde il y a ${plural(days(last), 'jour', 'jours')}.` : 'Vos cours ne sont pas encore sauvegardés.';
     out.push(`<div class="banner"><span>${msg}</span><button data-act="backup-now">Sauvegarder</button></div>`);
   }
@@ -96,7 +96,7 @@ function refreshList() {
   if (q.length < 2) {
     sugg.innerHTML = '';
     const subs = DB.activeSubjects();
-    list.innerHTML = subs.length ? subs.map(cardHtml).join('') : '<div class="empty">' + EMPTY_ART + '<p>Aucune matière pour l’instant. Une matière range vos leçons, par exemple Maths ou Histoire.</p><button class="primary" data-act="new-subject">Créer ma première matière</button></div>';
+    list.innerHTML = subs.length ? subs.map(cardHtml).join('') : '<div class="empty">' + EMPTY_ART + '<p>Aucune matière pour l’instant. Une matière range vos leçons, par exemple Maths ou Histoire.</p><div class="actions col"><button class="primary" data-act="new-subject">Créer ma première matière</button><button data-act="library">Ajouter les cours de 3ème</button></div></div>';
     return;
   }
   const { hits, suggestions } = DB.search(q);
@@ -172,6 +172,8 @@ async function backupDialog() {
   const last = DB.state.meta.lastBackupAt;
   const t = DB.trashed();
   openDlg(`<h2>Menu</h2>
+    <h3 class="mh">Cours prêts à l’emploi</h3>
+    <div class="actions col"><button data-act="library">Cours de 3ème</button></div>
     <h3 class="mh">Partager avec un camarade</h3>
     <div class="actions col"><button class="primary" data-act="share-open">Partager des cours</button>
     <button data-act="receive">Recevoir des cours</button>
@@ -198,7 +200,7 @@ function welcomeDialog() {
     <li><b>Ajoutez vos leçons</b> : écrivez-les, scannez une page de cours avec l’appareil photo, ou importez un PDF.</li>
     <li><b>Révisez chaque jour</b> : Namako vous propose les leçons à revoir. Notez-vous honnêtement.</li>
     <li><b>Partagez ou sauvegardez</b> avec le bouton Menu : envoyez des cours à un camarade ou faites une copie de sécurité.</li></ol>
-    <div class="actions col"><button class="primary" data-act="welcome-start">Créer ma première matière</button><button class="ghost" data-act="welcome-skip">Plus tard</button></div>`);
+    <div class="actions col"><button class="primary" data-act="welcome-start">Créer ma première matière</button><button data-act="library">Ajouter les cours de 3ème</button><button class="ghost" data-act="welcome-skip">Plus tard</button></div>`);
 }
 
 function trashDialog() {
@@ -230,6 +232,47 @@ function importDialog(b) {
     <div class="actions col"><button class="primary" data-act="apply" data-mode="merge">Fusionner avec mes cours</button>
     <button class="danger" data-act="apply" data-mode="replace">Remplacer mes cours</button>
     <button class="ghost" data-act="close">Annuler</button></div>`);
+}
+
+/* ---------- Cours prêts à l'emploi (3ème) ---------- */
+
+async function libraryDialog(flash = '') {
+  let PACKS;
+  try { ({ PACKS } = await import('./packs.js')); }
+  catch { return message('Cours indisponibles', 'Les cours de 3ème n’ont pas pu être chargés. Connectez-vous à Internet une première fois, puis réessayez.'); }
+  const rows = PACKS.map((p) => {
+    const left = p.lessons.filter((l) => !find('lessons', l.id)).length;
+    const has = find('subjects', p.id) && !find('subjects', p.id).deletedAt;
+    return `<div class="item"><span style="display:flex;align-items:center;gap:12px;min-width:0"><i class="tile" style="background:${p.color};color:${onColor(p.color)}">${esc(p.name[0])}</i>
+      <span class="cb"><b>${esc(p.name)}</b><small>${plural(p.lessons.length, 'fiche', 'fiches')}</small></span></span>
+      <button data-act="pack-add" data-pack="${p.id}"${left ? '' : ' disabled'}>${left ? (has ? 'Compléter' : 'Ajouter') : 'Ajoutée'}</button></div>`;
+  }).join('');
+  const todo = PACKS.some((p) => p.lessons.some((l) => !find('lessons', l.id)));
+  openDlg(`<h2>Cours de 3ème</h2>
+    <p class="note">Fiches de révision prêtes à l’emploi. Ajoutez celles qui vous intéressent, puis complétez-les avec votre propre cours.</p>
+    ${flash ? `<p class="banner">${esc(flash)}</p>` : ''}
+    ${rows}
+    <div class="actions col" style="margin-top:12px">${todo ? '<button class="primary" data-act="pack-add" data-pack="all">Tout ajouter</button>' : ''}<button class="ghost" data-act="close">Fermer</button></div>
+    <p class="note">Ces fiches sont des aide-mémoire rédigés pour Namako. Comparez-les avec votre cours et votre programme officiel.</p>`);
+}
+
+// N'ajoute que ce qui manque : une fiche modifiée ou supprimée par l'étudiant n'est jamais écrasée ni recréée
+async function addPacks(which) {
+  const { PACKS } = await import('./packs.js');
+  const now = Date.now();
+  let added = 0;
+  for (const p of PACKS.filter((x) => which === 'all' || x.id === which)) {
+    const subj = find('subjects', p.id);
+    if (!subj) await DB.put('subjects', { id: p.id, name: p.name, color: p.color, createdAt: now, deletedAt: null });
+    else if (subj.deletedAt) await DB.put('subjects', { ...subj, deletedAt: null });
+    for (const l of p.lessons) {
+      if (find('lessons', l.id)) continue;
+      await DB.put('lessons', { id: l.id, subjectId: p.id, title: l.title, content: l.content, tags: l.tags, source: 'pack', createdAt: now, deletedAt: null, mastery: 0, nextReviewAt: null });
+      added++;
+    }
+  }
+  render();
+  return libraryDialog(added ? `${plural(added, 'fiche ajoutée', 'fiches ajoutées')} à vos matières.` : 'Rien de nouveau à ajouter.');
 }
 
 /* ---------- Partage : matière et application ---------- */
@@ -721,6 +764,8 @@ async function onClick(e) {
     case 'share-open': return openShare(el.dataset.subject, el.dataset.lesson);
     case 'do-share': return doShare();
     case 'guide': return welcomeDialog();
+    case 'library': if (!DB.state.meta.welcomeDone) await DB.setMeta('welcomeDone', true); return libraryDialog();
+    case 'pack-add': return addPacks(el.dataset.pack);
     case 'welcome-start': await DB.setMeta('welcomeDone', true); return subjectDialog();
     case 'welcome-skip': await DB.setMeta('welcomeDone', true); return closeDlg();
     case 'persist': await navigator.storage.persist(); return backupDialog();
