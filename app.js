@@ -541,7 +541,7 @@ function renderActivate() {
     <p class="sub">${intro}</p>
     ${L.clockSuspect ? '<p class="note">La date de votre téléphone semble incorrecte. Corrigez-la dans les réglages.</p>' : ''}
     ${L.licensed ? '' : `
-    <h2 style="margin-top:24px">1. Payer</h2>
+    <h2 style="margin-top:24px">1. Pour débloquer tout le programme  </h2>
     <p>${esc(CFG.PRICE_LABEL)}</p>
     ${CFG.PAYMENTS.map((p) => `<div class="item"><span><b>${esc(p.name)}</b><br><small class="note">${esc(p.number)}${p.holder ? ', ' + esc(p.holder) : ''}</small></span>
       <button data-act="copy" data-text="${esc(p.number)}">Copier</button></div>`).join('')}
