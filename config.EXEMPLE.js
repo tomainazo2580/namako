@@ -1,0 +1,22 @@
+// Réglages de Namako. Pour les modifier : sur GitHub, ouvrez ce fichier, touchez le crayon,
+// changez les valeurs puis « Commit changes ». Ne changez que ce qui est entre guillemets ou chiffres.
+
+export const APP_BUILD = 4;     // numéro de cette version de l'app (voir version.json)
+export const TRIAL_DAYS = 7;    // durée de l'essai gratuit. Mettre 0 pour tester l'écran de verrouillage.
+
+// Clé publique de vérification des codes. Elle vient de la page admin.html (« Créer mes clés »).
+// Tant qu'elle vaut null, Namako reste ouvert à tous, sans essai ni verrouillage.
+export const PUBLIC_KEY = null;
+
+// À REMPLACER par vos vrais numéros avant de partager l'app :
+export const PRICE_LABEL = 'Prix : à définir (paiement unique, accès à vie)';
+export const ADMIN_WHATSAPP = '261340000000';   // votre numéro WhatsApp, format international, sans + ni espaces
+export const ADMIN_PHONE = '+261340000000';     // votre numéro pour les SMS
+export const PAYMENTS = [
+  { name: 'Mvola', number: '034 00 000 00', holder: 'Nom du titulaire' },
+  { name: 'Orange Money', number: '032 00 000 00', holder: 'Nom du titulaire' },
+  { name: 'Airtel Money', number: '033 00 000 00', holder: 'Nom du titulaire' },
+];
+
+// Fichiers rafraîchis lors d'une mise à jour forcée (ne pas modifier)
+export const APP_FILES = ['./', 'index.html', 'style.css', 'app.js', 'db.js', 'backup.js', 'review.js', 'config.js', 'codec.js', 'license.js', 'manifest.webmanifest'];

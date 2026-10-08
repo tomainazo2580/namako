@@ -78,7 +78,10 @@ function unlock(blob) {
     <form id="unlock" style="margin-top:16px"><label>Mot de passe<input type="password" name="p" required autocomplete="current-password"></label>
     <p class="note" id="msg" role="status"></p><button class="primary">Déverrouiller</button></form>
     <h2 style="margin-top:32px">Clé publique</h2><p class="note">Pour vérifier le contenu de config.js.</p>
-    <button id="showpub">Copier la ligne PUBLIC_KEY</button>`;
+    <button id="showpub">Copier la ligne PUBLIC_KEY</button>
+    <h2 style="margin-top:32px">Mot de passe oublié ?</h2>
+    <p class="note">Il ne peut pas être récupéré. Vous pouvez effacer cette clé et en créer une nouvelle. Il faudra alors remplacer la ligne PUBLIC_KEY dans config.js, et les codes déjà donnés cesseront de fonctionner.</p>
+    <button class="danger" id="reset">Effacer ma clé et recommencer</button>`;
   $('#unlock').onsubmit = async (e) => {
     e.preventDefault();
     note('Vérification…');
@@ -86,6 +89,12 @@ function unlock(blob) {
     catch { note('Mot de passe incorrect.'); }
   };
   $('#showpub').onclick = (e) => copy(`export const PUBLIC_KEY = ${JSON.stringify(blob.pub)};`, e.target);
+  $('#reset').onclick = () => {
+    if (!confirm('Effacer votre clé d’administration ? Les codes déjà donnés cesseront de fonctionner dès que la nouvelle clé sera installée.')) return;
+    localStorage.removeItem(KEY);
+    priv = null;
+    show();
+  };
 }
 
 function main(blob) {

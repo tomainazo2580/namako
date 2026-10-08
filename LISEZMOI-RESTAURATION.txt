@@ -1,0 +1,23 @@
+NAMAKO : ARCHIVE DU PROJET (version du 7 octobre 2026)
+
+CONTENU
+Tous les fichiers de l'application, sauf config.js.
+Le fichier config.EXEMPLE.js montre à quoi ressemble config.js (valeurs d'exemple).
+VOTRE VRAI config.js (clé publique, numéros Mobile Money, prix) est sur votre GitHub :
+ouvrez-le, copiez son texte et collez-le dans un message à vous-même. Sans lui, il faut recréer la clé.
+
+A GARDER EN PLUS (hors de cette archive)
+1. La sauvegarde chiffrée de votre clé d'administration (page admin.html > Ma clé > Copier la sauvegarde chiffrée).
+2. Votre mot de passe d'administration (sur papier).
+3. Le registre des codes (admin.html > Copier le registre complet).
+4. Les codes de récupération de votre compte GitHub (activez la double authentification).
+
+REMETTRE L'APPLICATION EN LIGNE AILLEURS
+1. Créez un projet chez le nouvel hébergeur de sites statiques (par exemple Cloudflare Pages).
+2. Envoyez tous les fichiers de cette archive à la racine du projet (sans sous-dossier).
+3. Remplacez config.EXEMPLE.js : créez config.js avec le texte de votre vrai config.js.
+4. Ouvrez l'adresse du nouveau site, vérifiez que l'application s'affiche.
+
+ATTENTION : les données des étudiants (cours, activation) sont liées à l'ADRESSE du site.
+Changer d'adresse oblige chaque étudiant à restaurer sa copie de sécurité et à demander un nouveau code.
+Changer d'hébergeur en gardant le même nom de domaine ne change rien pour eux.
