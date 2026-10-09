@@ -1,10 +1,10 @@
 // Service worker : l'app fonctionne hors ligne après la première visite.
 // À CHAQUE nouvelle version de l'app, changez le numéro de CACHE ci-dessous.
 // Les données des étudiants (IndexedDB) ne sont jamais touchées ici.
-const CACHE = 'namako-v13';
+const CACHE = 'namako-v15';
 const INBOX = 'namako-inbox';   // fichier reçu par le menu Partager du téléphone
 const LIBS = 'namako-libs';   // bibliothèques de scan (PDF, OCR), conservées d'une version à l'autre
-const FILES = ['./', 'index.html', 'style.css', 'app.js', 'db.js', 'backup.js', 'review.js', 'config.js', 'codec.js', 'license.js', 'scan.js', 'spell.js', 'qr.js', 'packs.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
+const FILES = ['./', 'style.css', 'app.js', 'db.js', 'backup.js', 'review.js', 'config.js', 'codec.js', 'license.js', 'scan.js', 'spell.js', 'qr.js', 'packs.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(FILES)).then(() => self.skipWaiting()));
@@ -49,7 +49,7 @@ self.addEventListener('fetch', (e) => {
         return res;
       });
       if (hit) { net.catch(() => {}); return hit; }
-      return net.catch(() => caches.match('index.html'));
+      return net.catch(() => caches.match('./'));
     })
   );
 });

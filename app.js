@@ -586,13 +586,29 @@ async function doUpdate(btn) {
   }
 }
 
+// Avis de déménagement : si version.json contient "moved" (nouvelle adresse), les anciens utilisateurs sont guidés
+function showMoved(target) {
+  let u;
+  try { u = new URL(target); } catch { return; }
+  if (!/^https?:$/.test(u.protocol) || u.origin === location.origin || dlg.open || blocked || LIC.lic.locked) return;
+  openDlg(`<h2>Namako a changé d’adresse</h2>
+    <p>Pour continuer à recevoir les mises à jour, passez à la nouvelle adresse. Vos cours ne sont pas perdus : voici comment les emporter.</p>
+    <ol class="steps"><li><b>Faites une copie de sécurité</b> et gardez-la (envoyez-la à vous-même).</li>
+    <li><b>Ouvrez le nouveau Namako</b> avec le bouton ci-dessous et ajoutez-le à votre écran d’accueil.</li>
+    <li>Dans le nouveau Namako : <b>Menu, puis « Restaurer ma copie de sécurité »</b>.</li>
+    <li>Si vous aviez acheté Namako, envoyez votre nouvel identifiant (écran d’activation) : votre code vous sera donné sans frais.</li></ol>
+    <div class="actions col"><button data-act="backup-now">Faire ma copie de sécurité</button>
+    <a class="btn" href="${esc(u.href)}">Ouvrir le nouveau Namako</a><button class="ghost" data-act="close">Plus tard</button></div>`);
+}
+
 // Bloque l'app seulement si l'appareil est en ligne ET que la version est trop ancienne
 async function checkVersion() {
   try {
     const r = await fetch('version.json', { cache: 'no-store' });
     if (!r.ok) return;
-    const { min } = await r.json();
-    if (min > CFG.APP_BUILD) { blocked = true; render(); }
+    const { min, moved } = await r.json();
+    if (min > CFG.APP_BUILD) { blocked = true; render(); return; }
+    if (moved) showMoved(moved);
   } catch { /* hors ligne : on ne bloque pas */ }
 }
 
