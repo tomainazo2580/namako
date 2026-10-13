@@ -1,10 +1,10 @@
 // Base locale (IndexedDB) et recherche. Aucune donnée ne quitte le téléphone.
 const DB_NAME = 'namako';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const TRASH_DAYS = 30;
 let db;
 
-export const state = { subjects: [], lessons: [], reviews: [], meta: {} };
+export const state = { subjects: [], lessons: [], reviews: [], attachments: [], meta: {} };
 
 export const uid = () =>
   crypto.randomUUID ? crypto.randomUUID() : 'id-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
@@ -26,24 +26,32 @@ function open() {
       if (!d.objectStoreNames.contains('lessons')) d.createObjectStore('lessons', { keyPath: 'id' }).createIndex('subjectId', 'subjectId');
       if (!d.objectStoreNames.contains('meta')) d.createObjectStore('meta', { keyPath: 'key' });
       if (!d.objectStoreNames.contains('reviews')) d.createObjectStore('reviews', { keyPath: 'id' }).createIndex('day', 'day');
+      if (!d.objectStoreNames.contains('attachments')) d.createObjectStore('attachments', { keyPath: 'id' }).createIndex('lessonId', 'lessonId');
     };
+    // Une autre fenêtre de Namako ouverte avec l'ancienne version peut bloquer la mise à jour de la base
+    r.onblocked = () => { const m = typeof document !== 'undefined' && document.querySelector('#app'); if (m) m.innerHTML = '<p class="empty">Fermez les autres fenêtres de Namako, puis rouvrez l’application.</p>'; };
     r.onsuccess = () => res(r.result);
     r.onerror = () => rej(r.error);
   });
 }
 
+const metaOf = (a) => ({ id: a.id, lessonId: a.lessonId, name: a.name, size: a.size || 0, createdAt: a.createdAt });
+
 export async function init() {
   db = await open();
-  const t = db.transaction(['subjects', 'lessons', 'reviews', 'meta']);
-  const [s, l, r, m] = await Promise.all([
+  db.onversionchange = () => db.close();   // laisse passer les futures mises à jour de structure
+  const t = db.transaction(['subjects', 'lessons', 'reviews', 'attachments', 'meta']);
+  const [s, l, r, a, m] = await Promise.all([
     wrap(t.objectStore('subjects').getAll()),
     wrap(t.objectStore('lessons').getAll()),
     wrap(t.objectStore('reviews').getAll()),
+    wrap(t.objectStore('attachments').getAll()),
     wrap(t.objectStore('meta').getAll()),
   ]);
   state.subjects = s;
   state.lessons = l;
   state.reviews = r;
+  state.attachments = a.map(metaOf);          // on ne garde en mémoire que les informations, pas les images
   state.meta = Object.fromEntries(m.map((x) => [x.key, x.value]));
   await purgeTrash();
 }
@@ -64,23 +72,28 @@ export async function put(store, obj) {
 }
 
 export async function removeForever(store, id) {
-  const t = db.transaction(['subjects', 'lessons'], 'readwrite');
+  const lessonIds = store === 'subjects' ? state.lessons.filter((x) => x.subjectId === id).map((l) => l.id) : store === 'lessons' ? [id] : [];
+  const attIds = state.attachments.filter((a) => lessonIds.includes(a.lessonId)).map((a) => a.id);
+  const t = db.transaction(['subjects', 'lessons', 'attachments'], 'readwrite');
   t.objectStore(store).delete(id);
-  if (store === 'subjects') for (const l of state.lessons.filter((x) => x.subjectId === id)) t.objectStore('lessons').delete(l.id);
+  if (store === 'subjects') for (const lid of lessonIds) t.objectStore('lessons').delete(lid);
+  for (const aid of attIds) t.objectStore('attachments').delete(aid);
   await done(t);
   if (store === 'subjects') state.lessons = state.lessons.filter((x) => x.subjectId !== id);
+  state.attachments = state.attachments.filter((a) => !attIds.includes(a.id));
   state[store] = state[store].filter((x) => x.id !== id);
 }
 
-export async function clearAll() {
-  const t = db.transaction(['subjects', 'lessons', 'reviews'], 'readwrite');
-  t.objectStore('subjects').clear();
-  t.objectStore('lessons').clear();
-  t.objectStore('reviews').clear();
+// Les photos ne sont effacées que si la sauvegarde restaurée en contient (sinon elles restent attachées à leurs leçons)
+export async function clearAll(withAttachments = false) {
+  const stores = ['subjects', 'lessons', 'reviews'].concat(withAttachments ? ['attachments'] : []);
+  const t = db.transaction(stores, 'readwrite');
+  stores.forEach((s) => t.objectStore(s).clear());
   await done(t);
   state.subjects = [];
   state.lessons = [];
   state.reviews = [];
+  if (withAttachments) state.attachments = [];
 }
 
 export async function setMeta(key, value) {
@@ -94,6 +107,9 @@ async function purgeTrash() {
   const limit = Date.now() - TRASH_DAYS * 864e5;
   for (const s of [...state.subjects]) if (s.deletedAt && s.deletedAt < limit) await removeForever('subjects', s.id);
   for (const l of [...state.lessons]) if (l.deletedAt && l.deletedAt < limit) await removeForever('lessons', l.id);
+  // photos dont la leçon n'existe plus
+  const live = new Set(state.lessons.map((l) => l.id));
+  for (const a of [...state.attachments]) if (!live.has(a.lessonId)) await removeAttachment(a.id);
 }
 
 export const activeSubjects = () =>
@@ -141,3 +157,31 @@ export function search(q) {
     .forEach((h) => suggestions.push({ kind: 'Leçon', label: h.lesson.title }));
   return { hits: hits.slice(0, 30), suggestions: suggestions.slice(0, 7) };
 }
+
+/* ---- Photos attachées aux leçons (les images sont stockées dans IndexedDB, hors de la mémoire) ---- */
+export async function putAttachmentRaw(rec) {
+  const t = db.transaction(['attachments'], 'readwrite');
+  t.objectStore('attachments').put(rec);
+  await done(t);
+  const meta = metaOf(rec);
+  const i = state.attachments.findIndex((a) => a.id === rec.id);
+  if (i >= 0) state.attachments[i] = meta; else state.attachments.push(meta);
+}
+
+export async function addAttachment(lessonId, blob, name = 'photo.jpg') {
+  const rec = { id: uid(), lessonId, name, type: blob.type || 'image/jpeg', size: blob.size, createdAt: Date.now(), blob };
+  await putAttachmentRaw(rec);
+  return rec.id;
+}
+
+export const getAttachment = (id) => wrap(db.transaction(['attachments']).objectStore('attachments').get(id));
+
+export async function removeAttachment(id) {
+  const t = db.transaction(['attachments'], 'readwrite');
+  t.objectStore('attachments').delete(id);
+  await done(t);
+  state.attachments = state.attachments.filter((a) => a.id !== id);
+}
+
+export const attachmentsOf = (lessonId) => state.attachments.filter((a) => a.lessonId === lessonId).sort((a, b) => a.createdAt - b.createdAt);
+export const attachmentsTotal = () => state.attachments.reduce((n, a) => n + (a.size || 0), 0);

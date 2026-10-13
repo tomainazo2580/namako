@@ -4,6 +4,8 @@ import * as RV from './review.js';
 import * as LIC from './license.js';
 import * as CFG from './config.js';
 import * as SC from './scan.js';
+import * as PH from './photo.js';
+import * as SM from './summary.js';
 import * as Spell from './spell.js';
 import { qrSvg } from './qr.js';
 
@@ -42,6 +44,8 @@ let pending = null;
 let timer;
 let session = null;
 let fileIntent = 'restore';
+let pendingPhotos = [];
+let photoUrls = [];
 let shareSel = new Set();
 let blocked = false;
 const sessionIgnore = new Set();
@@ -87,7 +91,7 @@ const cardHtml = (s) => {
 };
 const lessonHtml = (l, s, showSubject) => `<button class="hit" data-act="open-lesson" data-id="${l.id}"><i style="background:${s.color}"></i>
   <span class="cb"><b>${esc(l.title)}</b>${showSubject ? `<small>${esc(s.name)}</small>` : ''}${(l.tags || []).length ? `<small>${esc(l.tags.join(', '))}</small>` : ''}
-  <span class="ex">${esc(plain(l.content).slice(0, 110))}</span></span></button>`;
+  <span class="ex">${esc(plain(l.content).slice(0, 110) || (DB.attachmentsOf(l.id).length ? plural(DB.attachmentsOf(l.id).length, 'photo', 'photos') : ''))}</span></span></button>`;
 
 function refreshList() {
   const list = document.querySelector('#list');
@@ -163,6 +167,7 @@ function lessonDialog(l, subjectId, draft) {
     ${toolbar()}<label>Contenu<textarea name="content" lang="fr" spellcheck="true" autocorrect="on" rows="12">${esc(l?.content || draft?.content || '')}</textarea></label>
     <p class="note">Pour écrire à la voix, touchez le micro de votre clavier. Le bouton Orthographe vérifie les fautes.</p>
     <label>Tags, séparés par des virgules<input name="tags" value="${esc((l?.tags || []).join(', '))}"></label>
+    ${draft?.photos ? `<label class="chk"><input type="checkbox" name="keepPhotos" checked>Garder ${draft.photos > 1 ? 'les photos' : 'la photo'} avec la leçon</label>` : ''}
     <div class="actions">${l ? `<button type="button" class="danger" data-act="trash-lesson" data-id="${l.id}">Mettre à la corbeille</button>` : ''}
     <button type="button" class="ghost" data-act="close">Annuler</button><button class="primary">Enregistrer</button></div></form>`);
 }
@@ -182,6 +187,7 @@ async function backupDialog() {
     <button data-act="share-app">Partager l’application (QR Code)</button></div>
     <h3 class="mh">Mes données</h3>
     <p class="note">Namako fait seul des copies sur ce téléphone, mais seule la copie de sécurité protège si le téléphone est perdu ou vidé : envoyez-la à vous-même (WhatsApp, Drive, e-mail). ${last ? `Dernière copie : ${fmtDate(last)}.` : 'Aucune copie pour l’instant.'}</p>
+    ${DB.attachmentsTotal() ? `<p class="note">Photos gardées : ${DB.state.attachments.length} (${(DB.attachmentsTotal() / 1048576).toFixed(1)} Mo).</p>` : ''}
     <div class="actions col"><button data-act="backup-now">Faire une copie de sécurité</button>
     <button data-act="restore">Restaurer ma copie de sécurité</button>
     <button data-act="snapshots">Sauvegardes automatiques (${snaps.length})</button>
@@ -235,6 +241,95 @@ function importDialog(b) {
     <div class="actions col"><button class="primary" data-act="apply" data-mode="merge">Fusionner avec mes cours</button>
     <button class="danger" data-act="apply" data-mode="replace">Remplacer mes cours</button>
     <button class="ghost" data-act="close">Annuler</button></div>`);
+}
+
+/* ---------- Résumé d'une leçon ---------- */
+
+function summaryDialog(id, level = 2) {
+  const l = find('lessons', id);
+  if (!l) return;
+  const r = SM.summarize(l.title, l.content, level);
+  if (!r) return message('Résumé inutile', !l.content.trim() && DB.attachmentsOf(id).length ? 'Cette leçon ne contient que des photos : il n’y a pas de texte à résumer.' : 'Cette leçon est déjà courte : un résumé n’apporterait rien.');
+  const lv = (n, label) => `<button data-act="sum-level" data-id="${id}" data-level="${n}"${n === level ? ' class="primary"' : ''}>${label}</button>`;
+  openDlg(`<h2>Résumé</h2>
+    <p class="note">${plural(r.count, 'phrase retenue', 'phrases retenues')} sur ${r.total}. Namako choisit les phrases les plus importantes, sans Internet : relisez-les avec votre cours.</p>
+    <div class="actions" style="justify-content:flex-start;margin:0 0 8px">${lv(1, 'Court')}${lv(2, 'Moyen')}${lv(3, 'Détaillé')}</div>
+    ${r.keywords.length ? `<p><b>Mots-clés :</b> ${r.keywords.map(esc).join(', ')}</p>` : ''}
+    ${r.groups.map((g) => `${g.section ? `<h3 class="mh" style="margin-top:14px">${esc(g.section)}</h3>` : ''}<ul>${g.items.map((it) => `<li>${esc(it)}</li>`).join('')}</ul>`).join('')}
+    <div class="actions col"><button class="primary" data-act="sum-save" data-id="${id}" data-level="${level}">Enregistrer comme fiche</button><button class="ghost" data-act="close">Fermer</button></div>`);
+}
+
+// Le résumé devient une nouvelle leçon, à réviser comme les autres ; la leçon d'origine n'est pas modifiée
+async function saveSummary(id, level) {
+  const l = find('lessons', id);
+  const r = l && SM.summarize(l.title, l.content, level);
+  if (!r) return;
+  const title = `Résumé : ${l.title}`.slice(0, 120);
+  const saved = await DB.put('lessons', { id: DB.uid(), subjectId: l.subjectId, title, content: SM.toMarkdown(l.title, r), tags: [...new Set([...(l.tags || []), 'résumé'])], source: 'resume', createdAt: Date.now(), deletedAt: null, mastery: 0, nextReviewAt: null });
+  closeDlg();
+  go({ name: 'lesson', id: saved.id, from: view.from || { name: 'subject', id: l.subjectId } });
+}
+
+/* ---------- Photos attachées aux leçons ---------- */
+
+const pgridHtml = (lessonId) => `<div class="pgrid">${DB.attachmentsOf(lessonId).map((a, i) =>
+  `<button class="pthumb" data-act="photo-open" data-id="${a.id}" aria-label="Voir la photo ${i + 1}"><img alt="" data-photo="${a.id}"></button>`).join('')}</div>`;
+
+function photosHtml(lessonId) {
+  const n = DB.attachmentsOf(lessonId).length;
+  return `<section class="photos"><h2>${n ? `Photos (${n})` : 'Photos'}</h2>
+    ${n ? pgridHtml(lessonId) : '<p class="note">Aucune photo. Utile pour l’écriture à la main ou les schémas.</p>'}
+    <div class="actions" style="justify-content:flex-start"><button data-act="photo-add-cam">Prendre une photo</button><button data-act="photo-add-gal">Choisir dans la galerie</button></div></section>`;
+}
+
+async function fillPhotos() {
+  photoUrls.forEach((u) => URL.revokeObjectURL(u));
+  photoUrls = [];
+  for (const img of app.querySelectorAll('img[data-photo]')) {
+    const rec = await DB.getAttachment(img.dataset.photo);
+    if (rec && img.isConnected) { const u = URL.createObjectURL(rec.blob); photoUrls.push(u); img.src = u; }
+  }
+}
+
+async function photoDialog(attId) {
+  const rec = await DB.getAttachment(attId);
+  if (!rec) return;
+  const url = URL.createObjectURL(rec.blob);
+  photoUrls.push(url);
+  openDlg(`<img class="pfull" src="${url}" alt="Photo de la leçon">
+    <div class="actions"><button class="danger" data-act="photo-del" data-id="${attId}">Supprimer cette photo</button><button class="primary" data-act="close">Fermer</button></div>`);
+}
+
+const savingDialog = () => openDlg('<h2>Enregistrement…</h2><p class="note">Les photos sont réduites puis gardées sur votre téléphone.</p>');
+const photoProblem = (err) => message('Photo non enregistrée', err && err.name === 'QuotaExceededError' ? 'L’espace du téléphone est insuffisant. Supprimez des photos ou des fichiers, puis réessayez.' : (err && err.message) || 'Une erreur est survenue.');
+
+async function attachPhotos(files, lessonId) {
+  savingDialog();
+  try {
+    for (const f of files) { const p = await PH.compressImage(f); await DB.addAttachment(lessonId, p.blob, p.name); }
+    closeDlg();
+    render();
+  } catch (err) { photoProblem(err); }
+}
+
+// Une nouvelle leçon qui ne contient que des photos (écriture à la main, schémas)
+async function newPhotoLesson(files) {
+  if (view.name !== 'subject') return;
+  const subjectId = view.id;
+  savingDialog();
+  try {
+    const l = await DB.put('lessons', { id: DB.uid(), subjectId, title: 'Photo du ' + fmtDate(Date.now()), content: '', tags: [], source: 'photo', createdAt: Date.now(), deletedAt: null, mastery: 0, nextReviewAt: null });
+    for (const f of files) { const p = await PH.compressImage(f); await DB.addAttachment(l.id, p.blob, p.name); }
+    closeDlg();
+    go({ name: 'lesson', id: l.id, from: view });
+  } catch (err) { photoProblem(err); }
+}
+
+function photosChoiceDialog(total) {
+  openDlg(`<h2>Vos photos sont lourdes</h2>
+    <p>Vos photos pèsent ${(total / 1048576).toFixed(0)} Mo. Les ajouter à la copie de sécurité la rend longue à envoyer.</p>
+    <div class="actions col"><button class="primary" data-act="backup-now" data-photos="1">Copie avec les photos</button>
+    <button data-act="backup-now" data-photos="0">Copie sans les photos</button><button class="ghost" data-act="close">Annuler</button></div>`);
 }
 
 /* ---------- Réception : lien ou fichier envoyé vers Namako ---------- */
@@ -333,7 +428,7 @@ function renderShare() {
   app.innerHTML = `
     <header class="top"><button class="ghost" data-act="back">Retour</button></header>
     <h1>Partager</h1>
-    <p class="sub">Cochez ce que vous voulez envoyer à un camarade : une matière entière ou seulement certaines leçons. Votre progression de révision n’est pas envoyée.</p>
+    <p class="sub">Cochez ce que vous voulez envoyer à un camarade : une matière entière ou seulement certaines leçons. Votre progression de révision et vos photos ne sont pas envoyées.</p>
     <label class="chk" style="margin-top:16px"><input type="checkbox" id="sh-all"><b>Tout sélectionner</b></label>
     ${subs.map((s) => {
       const ls = DB.activeLessons(s.id);
@@ -468,14 +563,18 @@ function showSpell() {
 /* ---------- Importer : PDF et scan de cours ---------- */
 
 function importMenu() {
-  openDlg(`<h2>Importer dans cette matière</h2>
-    <div class="actions col">
-      <button class="primary" data-act="import-cam">Photographier un cours (scan)</button>
-      <button data-act="import-gal">Choisir des photos dans la galerie</button>
-      <button data-act="import-pdf">Document PDF</button>
-      <button data-act="import-txt">Fichier texte (.txt, .md)</button>
-      <button class="ghost" data-act="close">Annuler</button></div>
-    <p class="note">Pour un bon scan : page bien à plat, pleine lumière, texte droit et net. Vous pourrez corriger le texte reconnu avant d’enregistrer.</p>`);
+  openDlg(`<h2>Ajouter à cette matière</h2>
+    <h3 class="mh">Convertir en texte (le texte devient modifiable)</h3>
+    <div class="actions col"><button class="primary" data-act="import-cam">Photographier un cours à lire</button>
+    <button data-act="import-gal">Lire des photos de la galerie</button></div>
+    <h3 class="mh">Garder comme photos (écriture à la main, schémas)</h3>
+    <div class="actions col"><button data-act="keep-cam">Prendre une photo</button>
+    <button data-act="keep-gal">Images de la galerie</button></div>
+    <h3 class="mh">Fichiers</h3>
+    <div class="actions col"><button data-act="import-pdf">Document PDF</button>
+    <button data-act="import-txt">Fichier texte (.txt, .md)</button></div>
+    <div class="actions"><button class="ghost" data-act="close">Annuler</button></div>
+    <p class="note">Le scan ne lit pas l’écriture à la main : gardez-la en photo. Pour un bon scan : page à plat, pleine lumière, texte droit et net.</p>`);
 }
 
 function openProgress() {
@@ -520,7 +619,9 @@ async function runImport(kind, files) {
     if (usedOcr && !ready) await DB.setMeta('ocrReady', true);
     closeDlg();
     if (!text.trim()) return message('Aucun texte trouvé', 'Aucun texte n’a pu être lu. Pour un scan, essayez avec plus de lumière et une photo bien nette.');
-    lessonDialog(null, subjectId, { title, content: text, source });
+    pendingPhotos = [];
+    if (usedOcr && kind !== 'pdf') { try { pendingPhotos = await Promise.all(files.map((f) => PH.compressImage(f))); } catch { pendingPhotos = []; } }
+    lessonDialog(null, subjectId, { title, content: text, source, photos: pendingPhotos.length });
   } catch (err) {
     if (err.message === 'annulé') return closeDlg();
     message('Import impossible', err.message);
@@ -636,12 +737,14 @@ function renderReview() {
     <div class="prog" role="progressbar" aria-valuemin="0" aria-valuemax="${session.ids.length}" aria-valuenow="${session.i}"><i style="width:${Math.round((session.i / session.ids.length) * 100)}%"></i></div>
     <h1 class="sh" style="--c:${sub.color}">${esc(l.title)}</h1><p class="sub">${esc(sub.name)}</p>
     ${session.revealed
-      ? `<article class="read" style="font-size:${fs}px">${md(l.content) || '<p class="empty">Cette leçon est vide.</p>'}</article>
+      ? `<article class="read" style="font-size:${fs}px">${md(l.content) || (DB.attachmentsOf(l.id).length ? '<p class="empty">Cette leçon contient seulement des photos.</p>' : '<p class="empty">Cette leçon est vide.</p>')}</article>
+         ${DB.attachmentsOf(l.id).length ? `<div style="margin-top:12px">${pgridHtml(l.id)}</div>` : ''}
          <div class="readbar rate"><button class="danger" data-act="rate" data-r="0">À revoir<small>${lbl(0)}</small></button>
          <button data-act="rate" data-r="1">Encore un effort<small>${lbl(1)}</small></button>
          <button class="primary" data-act="rate" data-r="2">Je maîtrise<small>${lbl(2)}</small></button></div>`
       : `<p class="empty">Rappelez-vous l’essentiel de cette leçon, puis affichez-la pour vérifier.</p>
          <div class="readbar"><button class="primary" data-act="reveal">Afficher la leçon</button></div>`}`;
+  fillPhotos();
   scrollTo(0, 0);
 }
 
@@ -703,9 +806,11 @@ function renderLesson(id) {
     <header class="top"><button class="ghost" data-act="back">Retour</button><span><button class="ghost" data-act="share-open" data-lesson="${id}">Partager</button><button class="ghost" data-act="edit-lesson" data-id="${id}">Modifier</button></span></header>
     <h1 class="sh" style="--c:${s.color}">${esc(l.title)}</h1>
     <p class="sub">${esc(s.name)}${(l.tags || []).length ? ' – ' + esc(l.tags.join(', ')) : ''}</p>
-    <article class="read" style="font-size:${fs}px">${md(l.content) || '<p class="empty">Cette leçon est vide. Touchez Modifier pour écrire.</p>'}</article>
-    <div class="readbar"><button data-act="font-" aria-label="Réduire le texte">A−</button><button data-act="font+" aria-label="Agrandir le texte">A+</button>
+    <article class="read${DB.attachmentsOf(id).length ? ' nomin' : ''}" style="font-size:${fs}px">${md(l.content) || (DB.attachmentsOf(id).length ? '<p class="empty">Cette leçon contient seulement des photos.</p>' : '<p class="empty">Cette leçon est vide. Touchez Modifier pour écrire.</p>')}</article>
+    ${photosHtml(id)}
+    <div class="readbar"><button data-act="font-" aria-label="Réduire le texte">A−</button><button data-act="font+" aria-label="Agrandir le texte">A+</button><button data-act="summary" data-id="${id}">Résumé</button>
     ${'speechSynthesis' in window ? `<button class="primary" id="listen" data-act="listen">${speakingNow ? 'Arrêter' : 'Écouter'}</button>` : ''}</div>`;
+  fillPhotos();
 }
 
 // Barre d'outils de l'éditeur : mise en forme et symboles scientifiques
@@ -831,13 +936,28 @@ async function onClick(e) {
     case 'spell-add': await DB.setMeta('userWords', [...(DB.state.meta.userWords || []), el.dataset.w]); return showSpell();
     case 'close': return closeDlg();
     case 'backup-now': {
-      const r = await BK.exportBackup();
+      const total = DB.attachmentsTotal();
+      if (total > 25e6 && !el.dataset.photos) return photosChoiceDialog(total);
+      const withPhotos = el.dataset.photos !== '0';
+      const r = await BK.exportBackup({ photos: withPhotos });
       if (!r) return;
       render();
+      const note = !withPhotos && total ? ' Les photos ne sont pas incluses dans cette copie.' : '';
       return message(r === 'shared' ? 'Sauvegarde terminée' : 'Fichier enregistré',
-        r === 'shared' ? 'Vérifiez que le fichier est bien arrivé à destination (par exemple dans la conversation WhatsApp choisie).'
-                       : 'Le partage n’est pas disponible ici. Le fichier est dans vos Téléchargements : joignez-le à un message WhatsApp ou copiez-le ailleurs.');
+        (r === 'shared' ? 'Vérifiez que le fichier est bien arrivé à destination (par exemple dans la conversation WhatsApp choisie).'
+                        : 'Le partage n’est pas disponible ici. Le fichier est dans vos Téléchargements : joignez-le à un message WhatsApp ou copiez-le ailleurs.') + note);
     }
+    case 'summary': return summaryDialog(id, 2);
+    case 'sum-level': return summaryDialog(id, Number(el.dataset.level));
+    case 'sum-save': return saveSummary(id, Number(el.dataset.level));
+    case 'photo-open': return photoDialog(id);
+    case 'photo-del':
+      if (!confirm('Supprimer cette photo ?')) return;
+      await DB.removeAttachment(id); closeDlg(); return render();
+    case 'photo-add-cam': return photoCam.click();
+    case 'photo-add-gal': return photoGal.click();
+    case 'keep-cam': closeDlg(); return keepCam.click();
+    case 'keep-gal': closeDlg(); return keepGal.click();
     case 'restore': fileIntent = 'restore'; return document.querySelector('#file').click();
     case 'receive': fileIntent = 'receive'; return document.querySelector('#file').click();
     case 'share-open': return openShare(el.dataset.subject, el.dataset.lesson);
@@ -877,6 +997,7 @@ dlg.addEventListener('submit', async (e) => {
   const f = e.target;
   const d = new FormData(f);
   const id = f.dataset.id;
+  let lost = false;
   if (f.dataset.form === 'subject') {
     const name = String(d.get('name')).trim();
     if (!name) return;
@@ -888,10 +1009,16 @@ dlg.addEventListener('submit', async (e) => {
     if (!title) return;
     const tags = [...new Map(String(d.get('tags')).split(',').map((t) => t.trim()).filter(Boolean).map((t) => [t.toLowerCase(), t])).values()];
     const base = id ? find('lessons', id) : { id: DB.uid(), subjectId: f.dataset.subject, createdAt: Date.now(), deletedAt: null, mastery: 0, nextReviewAt: null, source: f.dataset.source || 'manual' };
-    await DB.put('lessons', { ...base, title, content: String(d.get('content')), tags });
+    const saved = await DB.put('lessons', { ...base, title, content: String(d.get('content')), tags });
+    if (d.get('keepPhotos') && pendingPhotos.length) {
+      try { for (const p of pendingPhotos) await DB.addAttachment(saved.id, p.blob, p.name); }
+      catch { lost = true; }
+    }
+    pendingPhotos = [];
   }
   closeDlg();
   render();
+  if (lost) message('Photo non gardée', 'L’espace du téléphone est insuffisant : la leçon est enregistrée, mais pas sa photo.');
 });
 
 app.addEventListener('submit', async (e) => {
@@ -963,6 +1090,26 @@ for (const [input, kind] of [[pdfInput, 'pdf'], [camInput, 'cam'], [galInput, 'g
     const files = [...e.target.files];
     e.target.value = '';
     if (files.length) runImport(kind, files);
+  });
+}
+const photoCam = mkInput('image/*');
+photoCam.setAttribute('capture', 'environment');
+const photoGal = mkInput('image/*', { multiple: true });
+const keepCam = mkInput('image/*');
+keepCam.setAttribute('capture', 'environment');
+const keepGal = mkInput('image/*', { multiple: true });
+for (const input of [photoCam, photoGal]) {
+  input.addEventListener('change', (e) => {
+    const files = [...e.target.files];
+    e.target.value = '';
+    if (files.length && view.name === 'lesson') attachPhotos(files, view.id);
+  });
+}
+for (const input of [keepCam, keepGal]) {
+  input.addEventListener('change', (e) => {
+    const files = [...e.target.files];
+    e.target.value = '';
+    if (files.length) newPhotoLesson(files);
   });
 }
 dlg.addEventListener('cancel', (e) => { if (dlg.querySelector('#pbar')) e.preventDefault(); });

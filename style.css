@@ -150,3 +150,12 @@ a.btn{display:flex;align-items:center;justify-content:center;min-height:48px;pad
 .prot{margin-top:12px;border-top:1px solid var(--rule);padding-top:4px}
 .prot summary{cursor:pointer;font-weight:600;min-height:44px;display:flex;align-items:center;color:var(--muted)}
 .card em{white-space:nowrap}
+.photos h2{margin-top:28px}
+.pgrid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0}
+.pthumb{padding:0;overflow:hidden;min-height:120px;background:var(--surface);border:1px solid var(--line);border-radius:10px}
+.pthumb img{display:block;width:100%;height:140px;object-fit:cover}
+.pfull{display:block;width:100%;height:auto;border-radius:8px;margin-bottom:12px;background:var(--bg)}
+.read.nomin{min-height:0}
+.read ul{margin:0}
+dialog ul{padding-left:1.2em;margin:4px 0}
+dialog li{margin-bottom:6px}

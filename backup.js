@@ -1,5 +1,6 @@
 // Sauvegarde et restauration : fichier .namako (JSON versionné + somme de contrôle).
-import { state, putRaw, clearAll, setMeta } from './db.js';
+import { state, putRaw, putAttachmentRaw, getAttachment, clearAll, setMeta } from './db.js';
+import { blobToB64, b64ToBlob } from './photo.js';
 
 const FORMAT_VERSION = 1;
 
@@ -8,15 +9,25 @@ async function sha256(text) {
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-export async function buildBackup() {
+export async function buildBackup({ photos = true } = {}) {
   const subjects = state.subjects.filter((s) => !s.deletedAt);
   const ok = new Set(subjects.map((s) => s.id));
   const lessons = state.lessons.filter((l) => !l.deletedAt && ok.has(l.subjectId));
-  const data = { subjects, lessons, reviews: state.reviews };
+  const data = { subjects, lessons, reviews: state.reviews, hasPhotos: false };
+  if (photos) {
+    const ids = new Set(lessons.map((l) => l.id));
+    const list = [];
+    for (const a of state.attachments.filter((x) => ids.has(x.lessonId))) {
+      const rec = await getAttachment(a.id);
+      if (rec) list.push({ id: rec.id, lessonId: rec.lessonId, name: rec.name, createdAt: rec.createdAt, data: await blobToB64(rec.blob) });
+    }
+    data.attachments = list;
+    data.hasPhotos = true;
+  }
   return { app: 'namako', formatVersion: FORMAT_VERSION, exportedAt: Date.now(), data, checksum: await sha256(JSON.stringify(data)) };
 }
 
-export const io = { put: putRaw };
+export const io = { put: putRaw, putAttachment: putAttachmentRaw };
 
 // Partage via WhatsApp et autres applications (fichier .txt) ou, à défaut, téléchargement (.namako).
 // Renvoie null si l'étudiant annule, 'shared' ou 'downloaded'.
@@ -37,9 +48,9 @@ async function deliver(json, base, title, text) {
   return shared ? 'shared' : 'downloaded';
 }
 
-export async function exportBackup() {
+export async function exportBackup(opts) {
   const stamp = new Date().toISOString().slice(0, 10);
-  const r = await deliver(JSON.stringify(await buildBackup()), `namako-${stamp}`, 'Sauvegarde Namako', 'Sauvegarde de mes cours Namako');
+  const r = await deliver(JSON.stringify(await buildBackup(opts)), `namako-${stamp}`, 'Sauvegarde Namako', 'Sauvegarde de mes cours Namako');
   if (r) await setMeta('lastBackupAt', Date.now());
   return r;
 }
@@ -111,20 +122,20 @@ export async function applyShare(b) {
 }
 
 export async function readBackup(file) {
-  if (file.size > 8e6) throw new Error('Ce fichier est trop volumineux pour être une sauvegarde Namako.');
+  if (file.size > 45e6) throw new Error('Ce fichier est trop volumineux pour être une sauvegarde Namako.');
   let b;
   try { b = JSON.parse(await file.text()); } catch { throw new Error('Ce fichier n’est pas une sauvegarde Namako.'); }
   if (b.app !== 'namako' || !b.data || !Array.isArray(b.data.subjects) || !Array.isArray(b.data.lessons))
     throw new Error('Ce fichier n’est pas une sauvegarde Namako.');
   if (b.formatVersion > FORMAT_VERSION) throw new Error('Cette sauvegarde vient d’une version plus récente de Namako. Mettez l’app à jour.');
   if ((await sha256(JSON.stringify(b.data))) !== b.checksum) throw new Error('Le fichier est abîmé ou a été modifié. Demandez-en une nouvelle copie.');
-  if (isShare(b) && (b.data.subjects.length < 1 || b.data.subjects.length > 50)) throw new Error('Ce fichier de cours partagés est invalide.');
+  if (isShare(b) && (b.data.subjects.length < 1 || b.data.subjects.length > 50 || file.size > 8e6)) throw new Error('Ce fichier de cours partagés est invalide ou trop volumineux.');
   return b;
 }
 
 // mode : 'merge' (garde le plus récent, sans doublons) ou 'replace' (efface d'abord)
 export async function applyBackup(b, mode) {
-  if (mode === 'replace') await clearAll();
+  if (mode === 'replace') await clearAll(!!b.data.hasPhotos);
   let added = 0, updated = 0;
   for (const store of ['subjects', 'lessons', 'reviews']) {
     for (const item of b.data[store] || []) {
@@ -132,6 +143,14 @@ export async function applyBackup(b, mode) {
       if (!cur) { await io.put(store, item); added++; }
       else if (item.updatedAt > cur.updatedAt) { await io.put(store, item); updated++; }
     }
+  }
+  for (const a of Array.isArray(b.data.attachments) ? b.data.attachments : []) {
+    const id = String((a && a.id) || '').slice(0, 80);
+    const lessonId = String((a && a.lessonId) || '').slice(0, 80);
+    if (!id || !a.data || state.attachments.some((x) => x.id === id) || !state.lessons.some((l) => l.id === lessonId)) continue;
+    const blob = b64ToBlob(a.data, 'image/jpeg');
+    await io.putAttachment({ id, lessonId, name: String(a.name || 'photo.jpg').slice(0, 120), type: 'image/jpeg', size: blob.size, createdAt: Number(a.createdAt) || Date.now(), blob });
+    added++;
   }
   return { added, updated };
 }
@@ -185,7 +204,7 @@ export async function autoSnapshot() {
   if (!hasData) return false;
   const fp = fingerprint();
   if (state.meta.snapFp === fp || Date.now() - (state.meta.snapAt || 0) < 20 * 36e5) return false;
-  const backup = await buildBackup();
+  const backup = await buildBackup({ photos: false });   // les copies automatiques ne contiennent pas les photos
   const json = JSON.stringify(backup);
   if (json.length > 8e6) return false;
   for (let i = SNAP_SLOTS.length; i >= 2; i--) {
