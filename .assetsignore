@@ -2,3 +2,4 @@
 wrangler.jsonc
 .git
 .github
+.worker.js
