@@ -1,7 +1,7 @@
 // Service worker : l'app fonctionne hors ligne après la première visite.
 // À CHAQUE nouvelle version de l'app, changez le numéro de CACHE ci-dessous.
 // Les données des étudiants (IndexedDB) ne sont jamais touchées ici.
-const CACHE = 'namako-v17';
+const CACHE = 'namako-v18';
 const INBOX = 'namako-inbox';   // fichier reçu par le menu Partager du téléphone
 const LIBS = 'namako-libs';   // bibliothèques de scan (PDF, OCR), conservées d'une version à l'autre
 const FILES = ['./', 'style.css', 'app.js', 'db.js', 'backup.js', 'review.js', 'config.js', 'codec.js', 'license.js', 'scan.js', 'spell.js', 'qr.js', 'photo.js', 'summary.js', 'packs.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
@@ -41,7 +41,8 @@ self.addEventListener('fetch', (e) => {
     return;
   }
   if (req.method !== 'GET' || new URL(req.url).origin !== location.origin) return;
-  if (new URL(req.url).pathname.endsWith('version.json')) return;   // toujours lu sur le réseau
+  const path = new URL(req.url).pathname;
+  if (path.endsWith('version.json') || path.startsWith('/api/')) return;   // toujours lus sur le réseau, jamais gardés en mémoire
   e.respondWith(
     caches.match(req, { ignoreSearch: true }).then((hit) => {
       const net = fetch(req).then((res) => {

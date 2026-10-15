@@ -243,6 +243,44 @@ function importDialog(b) {
     <button class="ghost" data-act="close">Annuler</button></div>`);
 }
 
+/* ---------- Import d'une page web ---------- */
+
+const WEB_ERRORS = {
+  invalid: 'Cette adresse n’est pas acceptée.',
+  unreachable: 'Le site n’a pas répondu ou refuse l’accès.',
+  timeout: 'Le site met trop de temps à répondre. Réessayez plus tard.',
+  type: 'Cette adresse n’est pas une page de texte (image, vidéo, PDF…). Pour un PDF, utilisez « Document PDF ».',
+  empty: 'Aucun texte lisible n’a été trouvé : la page est peut-être protégée ou affichée par JavaScript.',
+  forbidden: 'Cette demande n’a pas été acceptée.',
+};
+
+function webDialog(msg = '', value = '') {
+  openDlg(`<h2>Importer une page web</h2>
+    <p class="note">Namako récupère le texte de la page, sans les images ni les menus. C’est pour votre étude personnelle : gardez la source et respectez les droits d’auteur. Internet est nécessaire.</p>
+    <form data-form="web"><label>Adresse de la page<input name="url" type="url" inputmode="url" placeholder="https://fr.wikipedia.org/…" required value="${esc(value)}"></label>
+    <p class="note" id="webmsg" role="status">${esc(msg)}</p>
+    <div class="actions"><button type="button" class="ghost" data-act="close">Annuler</button><button class="primary">Importer le texte</button></div></form>`);
+}
+
+async function runWeb(raw) {
+  if (view.name !== 'subject') return;
+  const subjectId = view.id;
+  let u;
+  try { u = new URL(raw); if (!/^https?:$/.test(u.protocol)) throw new Error('protocole'); }
+  catch { return webDialog('Cette adresse n’est pas valide : elle doit commencer par https://', raw); }
+  if (!navigator.onLine) return webDialog('Pas de connexion Internet : cette fonction en a besoin.', raw);
+  openDlg('<h2>Lecture de la page…</h2><p class="note">Un instant.</p>');
+  try {
+    const r = await fetch('api/page?url=' + encodeURIComponent(u.href), { headers: { 'X-Namako': '1' } });
+    if (r.status === 404 || r.status === 405) return webDialog('Le service d’import de pages web n’est pas encore activé sur ce site.', raw);
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) return webDialog(WEB_ERRORS[data.error] || 'La page n’a pas pu être lue. Essayez une autre page.', raw);
+    const text = `${data.text}${data.truncated ? '\n\n(Texte coupé : la page est très longue.)' : ''}\n\nSource : ${data.url || u.href}`;
+    closeDlg();
+    lessonDialog(null, subjectId, { title: data.title || u.hostname, content: text, source: 'web' });
+  } catch { webDialog('Connexion impossible. Vérifiez votre Internet puis réessayez.', raw); }
+}
+
 /* ---------- Résumé d'une leçon ---------- */
 
 function summaryDialog(id, level = 2) {
@@ -570,6 +608,8 @@ function importMenu() {
     <h3 class="mh">Garder comme photos (écriture à la main, schémas)</h3>
     <div class="actions col"><button data-act="keep-cam">Prendre une photo</button>
     <button data-act="keep-gal">Images de la galerie</button></div>
+    <h3 class="mh">Depuis Internet</h3>
+    <div class="actions col"><button data-act="import-web">Page web (texte)</button></div>
     <h3 class="mh">Fichiers</h3>
     <div class="actions col"><button data-act="import-pdf">Document PDF</button>
     <button data-act="import-txt">Fichier texte (.txt, .md)</button></div>
@@ -917,6 +957,7 @@ async function onClick(e) {
     case 'import-pdf': closeDlg(); return pdfInput.click();
     case 'import-cam': closeDlg(); return camInput.click();
     case 'import-gal': closeDlg(); return galInput.click();
+    case 'import-web': return webDialog();
     case 'cancel-scan': SC.cancel(); return closeDlg();
     case 'share-app': return qrDialog();
     case 'share-link': return shareLink();
@@ -997,6 +1038,7 @@ dlg.addEventListener('submit', async (e) => {
   const f = e.target;
   const d = new FormData(f);
   const id = f.dataset.id;
+  if (f.dataset.form === 'web') return runWeb(String(d.get('url')).trim());
   let lost = false;
   if (f.dataset.form === 'subject') {
     const name = String(d.get('name')).trim();
