@@ -159,3 +159,17 @@ a.btn{display:flex;align-items:center;justify-content:center;min-height:48px;pad
 .read ul{margin:0}
 dialog ul{padding-left:1.2em;margin:4px 0}
 dialog li{margin-bottom:6px}
+/* Thèmes choisis par l'élève (Menu > Apparence). Sans choix, l'application suit le réglage du téléphone. */
+:root[data-theme=clair]{--bg:#F5F7FB;--surface:#FFFFFF;--ink:#14203F;--muted:#56628A;--line:#C9D3EE;--rule:#DCE3F5;--accent:#1D3FA6;--on:#FFFFFF;--danger:#B3261E;--margin:#D9566A;--marker:#FFE45E;--marker-soft:#FFF5BD;--marker-line:#E8D15A;--on-marker:#14203F;color-scheme:light}
+:root[data-theme=nuit]{--bg:#0D1226;--surface:#151B38;--ink:#E9EDFB;--muted:#9AA6CC;--line:#2A3566;--rule:#222C58;--accent:#8EA6FF;--on:#0D1226;--danger:#FF8A80;--margin:#F0788A;--marker:#F2D860;--marker-soft:#37331A;--marker-line:#6B5F22;--on-marker:#14203F;color-scheme:dark}
+:root[data-theme=sepia]{--bg:#F3EAD6;--surface:#FBF6E8;--ink:#3A2E21;--muted:#6F5F4B;--line:#D8C8A5;--rule:#E7DABB;--accent:#8A5320;--on:#FFFFFF;--danger:#A8321F;--margin:#C0504D;--marker:#F2D16B;--marker-soft:#F6E7B0;--marker-line:#D8BE6A;--on-marker:#3A2E21;color-scheme:light}
+:root[data-theme=ocean]{--bg:#E8F3F6;--surface:#FFFFFF;--ink:#0F2F3A;--muted:#48707C;--line:#BFDBE2;--rule:#D6E9EE;--accent:#0B6F8A;--on:#FFFFFF;--danger:#B3261E;--margin:#E0707E;--marker:#FFE45E;--marker-soft:#FFF5BD;--marker-line:#E8D15A;--on-marker:#14203F;color-scheme:light}
+:root[data-theme=foret]{--bg:#ECF4EC;--surface:#FFFFFF;--ink:#14301F;--muted:#4A6A53;--line:#C2D9C7;--rule:#D8E8DC;--accent:#2B7A4B;--on:#FFFFFF;--danger:#B3261E;--margin:#D9566A;--marker:#FFE45E;--marker-soft:#FFF5BD;--marker-line:#E8D15A;--on-marker:#14203F;color-scheme:light}
+:root[data-theme=rose]{--bg:#FCEFF3;--surface:#FFFFFF;--ink:#3A1A2A;--muted:#7A4D63;--line:#F0C9D8;--rule:#F8DFE8;--accent:#BE1558;--on:#FFFFFF;--danger:#B3261E;--margin:#E05A82;--marker:#FFE45E;--marker-soft:#FFF5BD;--marker-line:#E8D15A;--on-marker:#14203F;color-scheme:light}
+:root[data-theme=rosenuit]{--bg:#1C111F;--surface:#271829;--ink:#F9E8F1;--muted:#C9A3B8;--line:#4A2E4F;--rule:#3A2440;--accent:#FF8FBA;--on:#1C111F;--danger:#FF8A80;--margin:#FF7FA3;--marker:#F2D860;--marker-soft:#37331A;--marker-line:#6B5F22;--on-marker:#14203F;color-scheme:dark}
+:root[data-theme=solarized]{--bg:#FDF6E3;--surface:#FFFBF0;--ink:#073642;--muted:#4F6870;--line:#DDD6C0;--rule:#EBE4CE;--accent:#1B6DA8;--on:#FFFFFF;--danger:#B3261E;--margin:#D33682;--marker:#FFE45E;--marker-soft:#FFF5BD;--marker-line:#E8D15A;--on-marker:#14203F;color-scheme:light}
+.theme-row{display:flex;align-items:center;gap:12px;width:100%;text-align:left;margin-bottom:8px;min-height:54px;border:2px solid var(--line)}
+.theme-row .cb{padding:0}
+.theme-row.on{border-color:var(--accent);background:var(--bg);background:color-mix(in srgb,var(--accent) 12%,var(--surface))}
+.theme-row.on::after{content:"✓";margin-left:auto;font-weight:700;color:var(--accent)}
+.tdot{width:22px;height:22px;border-radius:50%;flex:none;border:1px solid rgba(0,0,0,.18)}

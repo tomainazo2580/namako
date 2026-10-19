@@ -57,6 +57,41 @@ const fmtDateTime = (ts) => new Date(ts).toLocaleString('fr-FR', { day: 'numeric
 const plural = (n, one, many) => `${n} ${n > 1 ? many : one}`;
 const find = (store, id) => DB.state[store].find((x) => x.id === id);
 
+/* ---------- Apparence : thèmes ---------- */
+
+const THEMES = [
+  { id: 'auto', name: 'Automatique', note: 'suit le réglage du téléphone', dot: 'linear-gradient(90deg,#1D3FA6 50%,#8EA6FF 50%)' },
+  { id: 'clair', name: 'Cahier clair', dot: '#1D3FA6' },
+  { id: 'nuit', name: 'Nuit', dot: '#8EA6FF' },
+  { id: 'sepia', name: 'Sépia chaud', note: 'doux pour lire longtemps', dot: '#8A5320' },
+  { id: 'ocean', name: 'Océan calme', dot: '#0B6F8A' },
+  { id: 'foret', name: 'Forêt', dot: '#2B7A4B' },
+  { id: 'rose', name: 'Rose', dot: '#BE1558' },
+  { id: 'rosenuit', name: 'Rose nuit', dot: '#FF8FBA' },
+  { id: 'solarized', name: 'Solarized', dot: '#1B6DA8' },
+];
+
+const savedTheme = () => { try { return localStorage.getItem('namako-theme') || 'auto'; } catch { return 'auto'; } };
+
+function applyTheme(id, save = true) {
+  const t = THEMES.some((x) => x.id === id) ? id : 'auto';
+  if (t === 'auto') delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = t;
+  if (save) { try { localStorage.setItem('namako-theme', t); } catch { /* préférence non gardée */ } }
+  const meta = document.querySelector('meta[name=theme-color]');
+  const bg = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
+  if (meta && bg) meta.content = bg;                  // la barre d'état prend la couleur du thème
+}
+
+function themeDialog() {
+  const cur = savedTheme();
+  openDlg(`<h2>Apparence</h2>
+    <p class="note">Choisissez l’ambiance qui vous convient. Le changement est immédiat.</p>
+    ${THEMES.map((t) => `<button class="theme-row${t.id === cur ? ' on' : ''}" data-act="theme-set" data-theme="${t.id}"><i class="tdot" style="background:${t.dot}"></i>
+      <span class="cb"><b>${t.name}</b>${t.note ? `<small>${t.note}</small>` : ''}</span></button>`).join('')}
+    <div class="actions"><button class="ghost" data-act="close">Fermer</button></div>`);
+}
+const markTheme = (id) => dlg.querySelectorAll('.theme-row').forEach((b) => b.classList.toggle('on', b.dataset.theme === id));
+
 /* ---------- Écrans ---------- */
 
 function banners() {
@@ -181,6 +216,8 @@ async function backupDialog() {
   openDlg(`<h2>Menu</h2>
     <h3 class="mh">Cours prêts à l’emploi</h3>
     <div class="actions col"><button data-act="library">Cours de 3ème</button></div>
+    <h3 class="mh">Apparence</h3>
+    <div class="actions col"><button data-act="theme">Thème : ${(THEMES.find((x) => x.id === savedTheme()) || THEMES[0]).name}</button></div>
     <h3 class="mh">Partager avec un camarade</h3>
     <div class="actions col"><button class="primary" data-act="share-open">Partager des cours</button>
     <button data-act="receive">Recevoir des cours</button>
@@ -1004,6 +1041,8 @@ async function onClick(e) {
     case 'share-open': return openShare(el.dataset.subject, el.dataset.lesson);
     case 'do-share': return doShare();
     case 'guide': return welcomeDialog();
+    case 'theme': return themeDialog();
+    case 'theme-set': applyTheme(el.dataset.theme); return markTheme(el.dataset.theme);
     case 'snapshots': return snapshotsDialog();
     case 'snap-restore': pending = BK.readSnapshot(el.dataset.slot); return importDialog(pending);
     case 'library': if (!DB.state.meta.welcomeDone) await DB.setMeta('welcomeDone', true); return libraryDialog();
@@ -1166,6 +1205,9 @@ document.addEventListener('visibilitychange', async () => {
 });
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+
+applyTheme(savedTheme(), false);
+if (window.matchMedia) matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if (savedTheme() === 'auto') applyTheme('auto', false); });
 
 (async () => {
   try { await DB.init(); }
