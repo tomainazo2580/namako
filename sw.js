@@ -1,7 +1,7 @@
 // Service worker : l'app fonctionne hors ligne après la première visite.
 // À CHAQUE nouvelle version de l'app, changez le numéro de CACHE ci-dessous.
 // Les données des étudiants (IndexedDB) ne sont jamais touchées ici.
-const CACHE = 'namako-v19';
+const CACHE = 'namako-v20';
 const INBOX = 'namako-inbox';   // fichier reçu par le menu Partager du téléphone
 const LIBS = 'namako-libs';   // bibliothèques de scan (PDF, OCR), conservées d'une version à l'autre
 const FILES = ['./', 'style.css', 'app.js', 'db.js', 'backup.js', 'review.js', 'config.js', 'codec.js', 'license.js', 'scan.js', 'spell.js', 'qr.js', 'photo.js', 'summary.js', 'packs.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];

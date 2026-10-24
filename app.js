@@ -126,7 +126,7 @@ const cardHtml = (s) => {
 };
 const lessonHtml = (l, s, showSubject) => `<button class="hit" data-act="open-lesson" data-id="${l.id}"><i style="background:${s.color}"></i>
   <span class="cb"><b>${esc(l.title)}</b>${showSubject ? `<small>${esc(s.name)}</small>` : ''}${(l.tags || []).length ? `<small>${esc(l.tags.join(', '))}</small>` : ''}
-  <span class="ex">${esc(plain(l.content).slice(0, 110) || (DB.attachmentsOf(l.id).length ? plural(DB.attachmentsOf(l.id).length, 'photo', 'photos') : ''))}</span></span></button>`;
+  <span class="ex">${esc(plain(l.content.replace(/^#[^\n]*\n+/, '')).slice(0, 110) || (DB.attachmentsOf(l.id).length ? plural(DB.attachmentsOf(l.id).length, 'photo', 'photos') : ''))}</span></span></button>`;
 
 function refreshList() {
   const list = document.querySelector('#list');
@@ -264,8 +264,10 @@ function subjectReceivedDialog(b) {
   const count = (id) => b.data.lessons.filter((l) => l && l.subjectId === id).length;
   const list = b.data.subjects.slice(0, 10).map((s) => `<li><b>${esc(String(s.name).slice(0, 60))}</b> : ${plural(count(s.id), 'leçon', 'leçons')}</li>`).join('');
   const exists = b.data.subjects.some((s) => DB.state.subjects.some((x) => x.id === s.id && !x.deletedAt));
+  const nPhotos = Array.isArray(b.data.attachments) ? b.data.attachments.length : 0;
   openDlg(`<h2>Cours reçus</h2>
     <ul>${list}</ul>
+    ${nPhotos ? `<p class="note">${plural(nPhotos, 'photo ou schéma inclus', 'photos et schémas inclus')}.</p>` : ''}
     <p class="note">${exists ? 'Certaines matières existent déjà chez vous : les nouvelles leçons sont ajoutées et les leçons modifiées mises à jour. Votre progression de révision est conservée.' : 'Ils seront ajoutés à côté de vos cours actuels. Rien n’est effacé.'}</p>
     <div class="actions col"><button class="primary" data-act="apply" data-mode="share">Ajouter ces cours</button><button class="ghost" data-act="close">Annuler</button></div>`);
 }
@@ -1060,7 +1062,7 @@ async function onClick(e) {
           const r = await BK.applyShare(pending);
           pending = null;
           render();
-          return message('Cours ajoutés', `${plural(r.subjects, 'matière', 'matières')} : ${plural(r.added, 'leçon ajoutée', 'leçons ajoutées')}, ${plural(r.updated, 'leçon mise à jour', 'leçons mises à jour')}.`);
+          return message('Cours ajoutés', `${plural(r.subjects, 'matière', 'matières')} : ${plural(r.added, 'leçon ajoutée', 'leçons ajoutées')}, ${plural(r.updated, 'leçon mise à jour', 'leçons mises à jour')}${r.photos ? `, ${plural(r.photos, 'photo ajoutée', 'photos ajoutées')}` : ''}.`);
         } catch (err) { return message('Ajout impossible', err.message); }
       }
       if (mode === 'replace' && !confirm('Vos cours actuels seront effacés et remplacés. Continuer ?')) return;

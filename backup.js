@@ -77,6 +77,8 @@ export async function exportShare(subjects, lessons) {
 }
 
 const COLOR = /^#[0-9a-fA-F]{6}$/;
+const MAX_SHARE_PHOTOS = 60;
+const MAX_PHOTO_B64 = 900000;      // environ 650 Ko par photo
 const str = (v, max) => String(v ?? '').slice(0, max);
 const num = (v, d) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : d);
 
@@ -118,7 +120,20 @@ export async function applyShare(b) {
       updated++;
     }
   }
-  return { subjects: names.size, names: [...names.values()], added, updated };
+  // Photos jointes (cours préparés avec des schémas) : JPEG seulement, taille et nombre limités, rattachées à une leçon du fichier
+  let photos = 0;
+  for (const a of Array.isArray(b.data.attachments) ? b.data.attachments.slice(0, MAX_SHARE_PHOTOS) : []) {
+    const id = str(a && a.id, 80);
+    const lessonId = str(a && a.lessonId, 80);
+    const data = a && typeof a.data === 'string' ? a.data : '';
+    if (!id || !data || data.length > MAX_PHOTO_B64 || !data.startsWith('/9j/') || !/^[A-Za-z0-9+/=]+$/.test(data)) continue;
+    if (state.attachments.some((x) => x.id === id)) continue;
+    if (!state.lessons.some((l) => l.id === lessonId && names.has(l.subjectId))) continue;
+    const blob = b64ToBlob(data, 'image/jpeg');
+    await io.putAttachment({ id, lessonId, name: str(a.name || 'photo.jpg', 120), type: 'image/jpeg', size: blob.size, createdAt: num(a.createdAt, now), blob });
+    photos++;
+  }
+  return { subjects: names.size, names: [...names.values()], added, updated, photos };
 }
 
 export async function readBackup(file) {
